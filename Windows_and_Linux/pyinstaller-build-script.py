@@ -14,6 +14,7 @@ def run_pyinstaller_build():
         "--clean",
         "--noconfirm",
         f"--add-data=electron_ui/index.html{sep}electron_ui",
+        f"--add-data=electron_ui/toast.html{sep}electron_ui",
         f"--add-data=icons{sep}icons",
         f"--add-data=options.json{sep}.",
         # Exclude unnecessary modules

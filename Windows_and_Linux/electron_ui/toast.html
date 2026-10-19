@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>WhatsApp Audio AI</title>
+<style>
+  :root {
+    --font-apple: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+    --shell-bg: rgba(16, 16, 22, 0.90);
+    --card-bg: rgba(255, 255, 255, 0.065);
+    --card-hover: rgba(255, 255, 255, 0.12);
+    --border-subtle: rgba(255, 255, 255, 0.12);
+    --border-bright: rgba(255, 255, 255, 0.24);
+    --text-primary: rgba(245, 245, 247, 0.97);
+    --text-secondary: rgba(235, 235, 245, 0.62);
+    --text-muted: rgba(235, 235, 245, 0.40);
+    --wa-green: #25D366;
+    --accent-blue: #0a84ff;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: var(--font-apple);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .toast-shell {
+    position: relative;
+    width: calc(100% - 6px);
+    height: calc(100% - 6px);
+    margin: 3px;
+    border-radius: 22px;
+    background: var(--shell-bg);
+    backdrop-filter: blur(36px) saturate(195%);
+    -webkit-backdrop-filter: blur(36px) saturate(195%);
+    border: 1px solid var(--border-subtle);
+    box-shadow:
+      inset 0 1px 0 0 var(--border-bright),
+      inset 0 0 28px rgba(168, 130, 255, 0.06),
+      0 14px 34px rgba(0, 0, 0, 0.45);
+    display: flex;
+    flex-direction: column;
+    padding: 12px 14px 12px 14px;
+    overflow: hidden;
+    animation: toastSlideIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Iridescent Apple Intelligence + WhatsApp Emerald Rim */
+  .toast-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 22px;
+    padding: 1.2px;
+    background: linear-gradient(
+      135deg,
+      rgba(37, 211, 102, 0.50),
+      rgba(168, 85, 247, 0.42) 38%,
+      rgba(10, 132, 255, 0.38) 72%,
+      rgba(236, 72, 153, 0.42)
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 4;
+  }
+
+  @keyframes toastSlideIn {
+    from { opacity: 0; transform: translateY(18px) scale(0.94); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+  }
+
+  .ambient-glow {
+    position: absolute;
+    inset: -25%;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(circle at 16% 18%, rgba(37, 211, 102, 0.14), transparent 45%),
+      radial-gradient(circle at 82% 24%, rgba(168, 85, 247, 0.16), transparent 48%),
+      radial-gradient(circle at 50% 85%, rgba(10, 132, 255, 0.12), transparent 52%);
+  }
+
+  /* Particle Burst Canvas Overlay */
+  #burstCanvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 25;
+  }
+
+  /* Header Bar */
+  .header-row {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+  }
+
+  .wa-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 9px;
+    border-radius: 999px;
+    background: rgba(37, 211, 102, 0.14);
+    border: 1px solid rgba(37, 211, 102, 0.34);
+    color: #4ade80;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1px;
+    max-width: 310px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .wa-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #25D366;
+    box-shadow: 0 0 8px #25D366;
+    flex-shrink: 0;
+  }
+
+  .close-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+
+  .close-btn:hover {
+    background: rgba(255, 69, 58, 0.25);
+    color: #fff;
+    transform: scale(1.06);
+  }
+
+  .close-btn svg {
+    width: 11px;
+    height: 11px;
+    stroke: currentColor;
+    stroke-width: 2.2;
+    fill: none;
+  }
+
+  /* Stage 1: Transcribing View */
+  .transcribing-view {
+    position: relative;
+    z-index: 10;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 4px 6px;
+  }
+
+  .transcribing-view.hidden {
+    display: none;
+  }
+
+  .orb-box {
+    position: relative;
+    width: 68px;
+    height: 68px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #miniOrbCanvas {
+    width: 68px;
+    height: 68px;
+  }
+
+  .status-col {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .status-title {
+    font-size: 13.5px;
+    font-weight: 600;
+    background: linear-gradient(90deg, #ffffff, #c084fc, #60a5fa, #ffffff);
+    background-size: 200% auto;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: shimmerText 2.2s linear infinite;
+  }
+
+  @keyframes shimmerText {
+    to { background-position: 200% center; }
+  }
+
+  .status-file {
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Stage 2: Result View with Burst & Fast AI Typing */
+  .result-view {
+    position: relative;
+    z-index: 10;
+    flex: 1;
+    display: none;
+    flex-direction: column;
+    justify-content: space-between;
+    min-height: 0;
+    gap: 8px;
+  }
+
+  .result-view.active {
+    display: flex;
+  }
+
+  .transcript-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.045);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 13px;
+    line-height: 1.46;
+    color: var(--text-primary);
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .transcript-scroll::-webkit-scrollbar {
+    width: 5px;
+  }
+  .transcript-scroll::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 4px;
+  }
+
+  /* Fast, silky AI word materialization ("explodir + digitar IA") */
+  .ai-word {
+    display: inline-block;
+    opacity: 0;
+    margin-right: 0.26em;
+    will-change: transform, opacity, filter;
+    animation: wordExplodeIn 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  }
+
+  @keyframes wordExplodeIn {
+    0% {
+      opacity: 0;
+      filter: blur(7px);
+      transform: translateY(5px) scale(0.90);
+      color: #c084fc;
+      text-shadow: 0 0 12px rgba(192, 132, 252, 0.85);
+    }
+    55% {
+      opacity: 1;
+      filter: blur(0.5px);
+      transform: translateY(-0.5px) scale(1.02);
+      color: #93c5fd;
+      text-shadow: 0 0 8px rgba(96, 165, 250, 0.55);
+    }
+    100% {
+      opacity: 1;
+      filter: blur(0px);
+      transform: translateY(0) scale(1);
+      color: var(--text-primary);
+      text-shadow: none;
+    }
+  }
+
+  .actions-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .auto-copied-hint {
+    font-size: 11px;
+    color: #4ade80;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .btn-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .action-btn {
+    height: 28px;
+    padding: 0 11px;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+    font-family: var(--font-apple);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s ease;
+  }
+
+  .action-btn:hover {
+    background: rgba(255, 255, 255, 0.16);
+    transform: translateY(-0.5px);
+  }
+
+  .action-btn.primary {
+    background: linear-gradient(135deg, rgba(10, 132, 255, 0.85), rgba(139, 92, 246, 0.85));
+    border-color: rgba(255, 255, 255, 0.24);
+    color: #fff;
+  }
+
+  .action-btn.primary:hover {
+    background: linear-gradient(135deg, rgba(10, 132, 255, 1), rgba(139, 92, 246, 1));
+  }
+</style>
+</head>
+<body>
+  <div class="toast-shell" id="toastShell">
+    <div class="ambient-glow"></div>
+    <canvas id="burstCanvas"></canvas>
+
+    <!-- Header -->
+    <div class="header-row">
+      <div class="wa-badge" id="waBadge">
+        <span class="wa-dot"></span>
+        <span id="badgeText">Áudio do WhatsApp (.ogg)</span>
+      </div>
+      <button class="close-btn" onclick="sendIPC('close')" title="Fechar">
+        <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+
+    <!-- Stage 1: Transcribing with 3D Thinking Orb -->
+    <div class="transcribing-view" id="transcribingView">
+      <div class="orb-box">
+        <canvas id="miniOrbCanvas" width="136" height="136"></canvas>
+      </div>
+      <div class="status-col">
+        <div class="status-title" id="statusTitle">Transcrevendo áudio...</div>
+        <div class="status-file" id="fileLabel">WhatsApp Audio.ogg</div>
+      </div>
+    </div>
+
+    <!-- Stage 2: Exploded & Streamed Transcript -->
+    <div class="result-view" id="resultView">
+      <div class="transcript-scroll" id="transcriptBox"></div>
+      <div class="actions-row">
+        <span class="auto-copied-hint" id="copiedHint">✓ Copiado para seu Ctrl+V</span>
+        <div class="btn-group">
+          <button class="action-btn" id="copyBtn" onclick="copyAgain()">📋 Copiar</button>
+          <button class="action-btn primary" onclick="sendIPC('paste')">📥 Colar Agora</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  function sendIPC(action, payload = {}) {
+    console.log("WT_TOAST_IPC:" + JSON.stringify({ action, ...payload }));
+  }
+
+  // ─── 1. 3D Apple Intelligence Mini Thinking Orb ──────────────────────────
+  const orbCanvas = document.getElementById("miniOrbCanvas");
+  const orbCtx = orbCanvas.getContext("2d");
+  let orbRunning = true;
+  let orbPhase = 0;
+
+  function renderMiniOrb() {
+    if (!orbRunning) return;
+    orbPhase += 0.055;
+    const w = orbCanvas.width;
+    const h = orbCanvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+    const r = w * 0.34;
+
+    orbCtx.clearRect(0, 0, w, h);
+
+    // Aura glow
+    const halo = orbCtx.createRadialGradient(cx, cy, r * 0.2, cx, cy, r * 1.38);
+    halo.addColorStop(0, "rgba(168, 85, 247, 0.55)");
+    halo.addColorStop(0.55, "rgba(10, 132, 255, 0.28)");
+    halo.addColorStop(1, "rgba(37, 211, 102, 0)");
+    orbCtx.fillStyle = halo;
+    orbCtx.beginPath();
+    orbCtx.arc(cx, cy, r * 1.38, 0, Math.PI * 2);
+    orbCtx.fill();
+
+    // 3D Orbiting ribbons
+    const colors = ["#a855f7", "#0a84ff", "#25D366", "#ec4899"];
+    for (let i = 0; i < 4; i++) {
+      const ang = orbPhase * (1.1 + i * 0.18) + (i * Math.PI) / 2;
+      const rx = r * (0.88 + 0.12 * Math.sin(orbPhase + i));
+      const ry = r * (0.52 + 0.16 * Math.cos(orbPhase * 0.8 + i));
+      orbCtx.save();
+      orbCtx.translate(cx, cy);
+      orbCtx.rotate(ang);
+      orbCtx.strokeStyle = colors[i];
+      orbCtx.lineWidth = 3.2;
+      orbCtx.shadowColor = colors[i];
+      orbCtx.shadowBlur = 10;
+      orbCtx.beginPath();
+      orbCtx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+      orbCtx.stroke();
+      orbCtx.restore();
+    }
+
+    // Core sphere
+    const core = orbCtx.createRadialGradient(cx - r * 0.25, cy - r * 0.25, r * 0.1, cx, cy, r * 0.75);
+    core.addColorStop(0, "rgba(255, 255, 255, 0.92)");
+    core.addColorStop(0.4, "rgba(139, 92, 246, 0.75)");
+    core.addColorStop(1, "rgba(15, 23, 42, 0.15)");
+    orbCtx.fillStyle = core;
+    orbCtx.beginPath();
+    orbCtx.arc(cx, cy, r * 0.62, 0, Math.PI * 2);
+    orbCtx.fill();
+
+    requestAnimationFrame(renderMiniOrb);
+  }
+  requestAnimationFrame(renderMiniOrb);
+
+  // ─── 2. Particle & Shockwave Explosion Engine ("explodir o texto") ───────
+  const burstCanvas = document.getElementById("burstCanvas");
+  const bCtx = burstCanvas.getContext("2d");
+  let particles = [];
+  let shockwaves = [];
+  let burstActive = false;
+
+  function resizeBurstCanvas() {
+    burstCanvas.width = burstCanvas.clientWidth * window.devicePixelRatio;
+    burstCanvas.height = burstCanvas.clientHeight * window.devicePixelRatio;
+  }
+  window.addEventListener("resize", resizeBurstCanvas);
+
+  function triggerParticleExplosion() {
+    resizeBurstCanvas();
+    const w = burstCanvas.width;
+    const h = burstCanvas.height;
+    const ox = w * 0.22;
+    const oy = h * 0.48;
+
+    particles = [];
+    shockwaves = [
+      { x: ox, y: oy, r: 8, maxR: Math.max(w, h) * 0.95, alpha: 0.75, color: "#c084fc" },
+      { x: ox, y: oy, r: 2, maxR: Math.max(w, h) * 0.75, alpha: 0.60, color: "#38bdf8" }
+    ];
+
+    const palette = ["#c084fc", "#60a5fa", "#34d399", "#f472b6", "#ffffff"];
+    for (let i = 0; i < 46; i++) {
+      const angle = (Math.PI * 2 * i) / 46 + (Math.random() - 0.5) * 0.25;
+      const speed = (3.5 + Math.random() * 9.5) * window.devicePixelRatio;
+      particles.push({
+        x: ox,
+        y: oy,
+        vx: Math.cos(angle) * speed * 1.35,
+        vy: Math.sin(angle) * speed * 0.85,
+        size: (1.8 + Math.random() * 3.0) * window.devicePixelRatio,
+        alpha: 1.0,
+        decay: 0.024 + Math.random() * 0.022,
+        color: palette[i % palette.length]
+      });
+    }
+
+    if (!burstActive) {
+      burstActive = true;
+      requestAnimationFrame(stepBurst);
+    }
+  }
+
+  function stepBurst() {
+    bCtx.clearRect(0, 0, burstCanvas.width, burstCanvas.height);
+    let alive = false;
+
+    for (const sw of shockwaves) {
+      if (sw.alpha > 0.01) {
+        alive = true;
+        sw.r += (sw.maxR - sw.r) * 0.14;
+        sw.alpha *= 0.88;
+        bCtx.save();
+        bCtx.strokeStyle = sw.color;
+        bCtx.globalAlpha = sw.alpha;
+        bCtx.lineWidth = 2.5 * window.devicePixelRatio;
+        bCtx.beginPath();
+        bCtx.arc(sw.x, sw.y, sw.r, 0, Math.PI * 2);
+        bCtx.stroke();
+        bCtx.restore();
+      }
+    }
+
+    for (const p of particles) {
+      if (p.alpha > 0.01) {
+        alive = true;
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vx *= 0.94;
+        p.vy *= 0.94;
+        p.alpha -= p.decay;
+        bCtx.save();
+        bCtx.fillStyle = p.color;
+        bCtx.globalAlpha = Math.max(0, p.alpha);
+        bCtx.shadowColor = p.color;
+        bCtx.shadowBlur = 8;
+        bCtx.beginPath();
+        bCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        bCtx.fill();
+        bCtx.restore();
+      }
+    }
+
+    if (alive) {
+      requestAnimationFrame(stepBurst);
+    } else {
+      burstActive = false;
+      bCtx.clearRect(0, 0, burstCanvas.width, burstCanvas.height);
+    }
+  }
+
+  // ─── 3. Public API Called from Python ────────────────────────────────────
+  window.startTranscribing = function(fileName, statusText) {
+    orbRunning = true;
+    document.getElementById("transcribingView").classList.remove("hidden");
+    document.getElementById("resultView").classList.remove("active");
+    document.getElementById("fileLabel").textContent = fileName || "WhatsApp Audio.ogg";
+    document.getElementById("statusTitle").textContent = statusText || "Transcrevendo áudio do WhatsApp...";
+    document.getElementById("badgeText").textContent = "Áudio do WhatsApp • Transcrevendo...";
+    requestAnimationFrame(renderMiniOrb);
+  };
+
+  window.updateStatus = function(statusText) {
+    document.getElementById("statusTitle").textContent = statusText;
+  };
+
+  window.showTranscribedResult = function(text, fileName) {
+    orbRunning = false;
+    document.getElementById("transcribingView").classList.add("hidden");
+    const rv = document.getElementById("resultView");
+    rv.classList.add("active");
+    document.getElementById("badgeText").textContent = "🟢 WhatsApp Transcrito • " + (fileName || ".ogg");
+
+    // Fire the iridescent shockwave + particle burst!
+    triggerParticleExplosion();
+
+    // Render words with fast staggered AI materialization (total reveal ~0.35s - 0.45s)
+    const box = document.getElementById("transcriptBox");
+    box.innerHTML = "";
+    const words = (text || "").trim().split(/\s+/);
+    const stepMs = Math.min(18, Math.max(5, Math.floor(360 / Math.max(1, words.length))));
+
+    words.forEach((w, idx) => {
+      const span = document.createElement("span");
+      span.className = "ai-word";
+      span.style.animationDelay = (idx * stepMs) + "ms";
+      span.textContent = w;
+      box.appendChild(span);
+    });
+  };
+
+  function copyAgain() {
+    sendIPC("copy");
+    const btn = document.getElementById("copyBtn");
+    btn.textContent = "✓ Copiado!";
+    setTimeout(() => { btn.textContent = "📋 Copiar"; }, 1500);
+  }
+</script>
+</body>
+</html>

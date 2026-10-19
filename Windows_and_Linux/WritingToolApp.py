@@ -14,8 +14,10 @@ import ui.CustomPopupWindow
 import ui.OnboardingWindow
 import ui.ResponseWindow
 import ui.SettingsWindow
+from ui.WhatsAppToastWindow import WhatsAppToastWindow
 from aiprovider import GeminiProvider, OllamaProvider, OpenAICompatibleProvider, obfuscate_api_key
 from audio_transcriber import AudioTranscriber
+from whatsapp_watcher import WhatsAppOggWatcher
 from pynput import keyboard as pykeyboard
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QLocale, Signal, Slot
@@ -170,6 +172,24 @@ class WritingToolApp(QtWidgets.QApplication):
             self.popup_window.hide()
         except Exception as e:
             logging.warning(f"Popup pre-warm notice: {e}")
+
+        # Pre-warm the bottom-right WhatsApp .ogg Toast Window & Multi-Browser Download Watcher
+        try:
+            self.whatsapp_toast = WhatsAppToastWindow(self)
+            self.whatsapp_toast.hide()
+        except Exception as e:
+            logging.warning(f"WhatsApp toast pre-warm notice: {e}")
+            self.whatsapp_toast = None
+
+        wa_enabled = (self.config or {}).get('whatsapp_ogg_watcher', True)
+        wa_extra_dirs = (self.config or {}).get('whatsapp_extra_dirs', [])
+        self.whatsapp_watcher = WhatsAppOggWatcher(
+            self,
+            enabled=wa_enabled,
+            extra_dirs=wa_extra_dirs
+        )
+        self.whatsapp_watcher.ogg_detected.connect(self._on_whatsapp_ogg_detected)
+        self.update_tray_menu()
 
         # Initialize update checker
         self.update_checker = UpdateChecker(self)
@@ -965,6 +985,93 @@ class WritingToolApp(QtWidgets.QApplication):
 
         threading.Thread(target=_delayed_paste, daemon=True).start()
 
+    @Slot(str)
+    def _on_whatsapp_ogg_detected(self, file_path: str):
+        """
+        Automatically triggered when a new `.ogg` audio file is downloaded in any browser.
+        Opens the bottom-right Apple Intelligence corner toast in 'Transcribing' mode,
+        runs Faster-Whisper + LLM punctuation refinement in the background, and then
+        triggers the iridescent particle burst + fast AI word-by-word reveal!
+        """
+        if self.paused or not (self.config or {}).get('whatsapp_ogg_watcher', True):
+            return
+
+        logging.info(f"Auto-transcribing newly downloaded WhatsApp .ogg file: {file_path}")
+        self.set_tray_state("processing", f"Transcrevendo WhatsApp: {os.path.basename(file_path)}")
+
+        if self.whatsapp_toast is None:
+            self.whatsapp_toast = WhatsAppToastWindow(self)
+        self.whatsapp_toast.show_transcribing(file_path)
+
+        def _ogg_worker():
+            try:
+                raw_text = self.audio_transcriber.transcribe_file_sync(file_path, language="pt")
+                if not raw_text:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.whatsapp_toast,
+                        "show_result",
+                        QtCore.Qt.ConnectionType.QueuedConnection,
+                        QtCore.Q_ARG(str, "⚠️ Não foi possível detectar fala neste áudio .ogg.")
+                    )
+                    return
+
+                final_text = raw_text.strip()
+                refine_enabled = (self.config or {}).get('audio_llm_refinement', True)
+                if refine_enabled and self.current_provider:
+                    QtCore.QMetaObject.invokeMethod(
+                        self.whatsapp_toast,
+                        "update_status",
+                        QtCore.Qt.ConnectionType.QueuedConnection,
+                        QtCore.Q_ARG(str, "Refinando pontuação na IA...")
+                    )
+                    try:
+                        system_instruction = (
+                            "Você é um assistente especialista em revisão de transcrições de áudios do WhatsApp em Português do Brasil (PT-BR).\n"
+                            "Sua tarefa é corrigir a pontuação, acentuação, capitalização e erros gramaticais ou de transcrição fonética do áudio, "
+                            "eliminando vícios de fala óbvios (como 'ééé', 'hmm'), mas mantendo 100% o sentido, as gírias e o tom natural de quem mandou o áudio.\n"
+                            "Retorne APENAS o texto final corrigido e pontuado, sem nenhum comentário, sem aspas extras e sem introduções."
+                        )
+                        prompt = f"Corrija a pontuação e a gramática desta transcrição de áudio do WhatsApp:\n\n{raw_text}"
+                        llm_res = self.current_provider.get_response(
+                            system_instruction,
+                            prompt,
+                            return_response=True
+                        )
+                        if (
+                            llm_res
+                            and llm_res.strip()
+                            and "ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST" not in llm_res
+                            and not llm_res.startswith("An error occurred")
+                        ):
+                            final_text = llm_res.strip()
+                    except Exception as llm_err:
+                        logging.warning(f"WhatsApp .ogg LLM refinement fallback: {llm_err}")
+
+                QtCore.QMetaObject.invokeMethod(
+                    self.whatsapp_toast,
+                    "show_result",
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(str, final_text)
+                )
+            except Exception as e:
+                logging.error(f"Error transcribing WhatsApp .ogg file: {e}", exc_info=True)
+                QtCore.QMetaObject.invokeMethod(
+                    self.whatsapp_toast,
+                    "show_result",
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(str, f"⚠️ Erro ao transcrever áudio: {e}")
+                )
+            finally:
+                QtCore.QMetaObject.invokeMethod(
+                    self,
+                    "set_tray_state",
+                    QtCore.Qt.ConnectionType.QueuedConnection,
+                    QtCore.Q_ARG(str, "idle"),
+                    QtCore.Q_ARG(str, "")
+                )
+
+        threading.Thread(target=_ogg_worker, daemon=True).start()
+
     @staticmethod
     def clear_clipboard():
         """
@@ -1513,6 +1620,14 @@ class WritingToolApp(QtWidgets.QApplication):
         open_action = self.tray_menu.addAction(f"🎙️ Abrir Apple Intelligence ({shortcut_str})")
         open_action.triggered.connect(self._show_popup)
 
+        # WhatsApp .ogg Auto-Transcribe Toggle
+        wa_on = (self.config or {}).get("whatsapp_ogg_watcher", True)
+        self._wa_toggle_action = self.tray_menu.addAction(
+            "🟢 Auto-Transcrever WhatsApp (.ogg): Ativo"
+            if wa_on else "⚪ Auto-Transcrever WhatsApp (.ogg): Desativado"
+        )
+        self._wa_toggle_action.triggered.connect(self.toggle_whatsapp_watcher)
+
         # Settings menu item
         settings_action = self.tray_menu.addAction("⚙️ Configurações")
         settings_action.triggered.connect(self.show_settings)
@@ -1532,6 +1647,17 @@ class WritingToolApp(QtWidgets.QApplication):
         # Exit menu item
         exit_action = self.tray_menu.addAction("❌ Sair")
         exit_action.triggered.connect(self.exit_app)
+
+    def toggle_whatsapp_watcher(self):
+        """Toggle automatic WhatsApp .ogg download transcription on/off."""
+        cur = (self.config or {}).get("whatsapp_ogg_watcher", True)
+        new_val = not cur
+        if self.config is not None:
+            self.config["whatsapp_ogg_watcher"] = new_val
+            self.save_config(self.config)
+        if hasattr(self, "whatsapp_watcher") and self.whatsapp_watcher:
+            self.whatsapp_watcher.set_enabled(new_val)
+        self.update_tray_menu()
 
     def toggle_paused(self):
         """Toggle the paused state of the application and update tray icon badge."""

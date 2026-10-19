@@ -6,6 +6,7 @@
     "whisper_model": "large-v3",
     "whisper_device": "auto",
     "audio_llm_refinement": true,
+    "whatsapp_ogg_watcher": true,
     "providers": {
         "Gemini (Recommended)": {
             "api_key": "",

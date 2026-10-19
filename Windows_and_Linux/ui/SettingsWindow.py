@@ -401,6 +401,23 @@ class SettingsWindow(QtWidgets.QWidget):
         self.audio_llm_checkbox.setChecked(self.app.config.get('audio_llm_refinement', True))
         whisper_layout.addWidget(self.audio_llm_checkbox)
 
+        # Checkbox: Auto-transcribe WhatsApp .ogg downloads across all browsers
+        self.whatsapp_ogg_checkbox = QtWidgets.QCheckBox(
+            "🟢 Transcrever automaticamente áudios do WhatsApp (.ogg) baixados em qualquer navegador"
+        )
+        self.whatsapp_ogg_checkbox.setStyleSheet(f"font-size: 12.5px; font-weight: 600; color: {fg_primary}; margin-top: 6px;")
+        self.whatsapp_ogg_checkbox.setChecked(self.app.config.get('whatsapp_ogg_watcher', True))
+        whisper_layout.addWidget(self.whatsapp_ogg_checkbox)
+
+        if hasattr(self.app, "whatsapp_watcher") and self.app.whatsapp_watcher:
+            dirs_list = self.app.whatsapp_watcher.get_watched_directories()
+            if dirs_list:
+                dirs_str = " • ".join(dirs_list[:5])
+                wa_dirs_label = QtWidgets.QLabel(f"📂 Pastas dos navegadores monitoradas: {dirs_str}")
+                wa_dirs_label.setWordWrap(True)
+                wa_dirs_label.setStyleSheet(f"font-size: 11px; color: {fg_secondary}; margin-left: 20px;")
+                whisper_layout.addWidget(wa_dirs_label)
+
         content_layout.addWidget(whisper_card)
 
         # ─── CARD 3: ATALHO GLOBAL & APARÊNCIA ───────────────────────────────
@@ -526,10 +543,16 @@ class SettingsWindow(QtWidgets.QWidget):
         whisper_model = self.whisper_model_dropdown.currentData() if self.whisper_model_dropdown else 'large-v3'
         whisper_device = self.whisper_device_dropdown.currentData() if self.whisper_device_dropdown else 'auto'
         audio_llm = self.audio_llm_checkbox.isChecked() if self.audio_llm_checkbox else True
+        wa_ogg = self.whatsapp_ogg_checkbox.isChecked() if getattr(self, 'whatsapp_ogg_checkbox', None) else True
 
         self.app.config['whisper_model'] = whisper_model
         self.app.config['whisper_device'] = whisper_device
         self.app.config['audio_llm_refinement'] = audio_llm
+        self.app.config['whatsapp_ogg_watcher'] = wa_ogg
+
+        if hasattr(self.app, 'whatsapp_watcher') and self.app.whatsapp_watcher:
+            self.app.whatsapp_watcher.set_enabled(wa_ogg)
+            self.app.update_tray_menu()
 
         if hasattr(self.app, 'audio_transcriber') and self.app.audio_transcriber:
             self.app.audio_transcriber.configure_whisper(

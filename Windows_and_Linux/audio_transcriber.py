@@ -409,3 +409,21 @@ class AudioTranscriber(QtCore.QObject):
                         pass
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def transcribe_file_sync(self, file_path: str, language: str = "pt") -> str:
+        """
+        Synchronously transcribe an audio file (e.g., WhatsApp .ogg) on a caller's worker thread
+        without emitting microphone popup signals. Returns the raw transcribed text.
+        """
+        model = self._ensure_model_loaded()
+        logging.info(f"Transcribing audio file (sync): {file_path} (model={self.model_size})")
+        segments, info = model.transcribe(
+            file_path,
+            beam_size=5,
+            language=language if language else None,
+            vad_filter=True,
+            vad_parameters=dict(min_silence_duration_ms=400)
+        )
+        text_parts = [seg.text.strip() for seg in segments if seg.text.strip()]
+        return " ".join(text_parts).strip()
+
