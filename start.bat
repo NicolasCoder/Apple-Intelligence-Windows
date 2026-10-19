@@ -5,3 +5,4 @@ if exist "start_silent.vbs" (
 ) else (
     start "" pythonw.exe main.py
 )
+

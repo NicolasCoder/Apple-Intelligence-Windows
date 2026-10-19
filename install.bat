@@ -15,3 +15,4 @@ if %errorlevel% neq 0 (
 
 python "%~dp0install.py"
 pause
+

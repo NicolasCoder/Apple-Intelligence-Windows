@@ -864,6 +864,11 @@ class WritingToolApp(QtWidgets.QApplication):
 
     @Slot(str)
     def _on_audio_status_changed(self, status_text: str):
+        st_lower = (status_text or "").lower()
+        if "gravando" in st_lower:
+            self.set_tray_state("recording", status_text)
+        elif "transcrevendo" in st_lower or "carregando" in st_lower or "refinando" in st_lower:
+            self.set_tray_state("processing", status_text)
         if self.popup_window is not None and self.popup_window.isVisible():
             self.popup_window.update_audio_status(status_text)
 
@@ -881,6 +886,7 @@ class WritingToolApp(QtWidgets.QApplication):
     @Slot(str)
     def _on_transcription_error(self, error_msg: str):
         logging.error(f"Audio transcription error: {error_msg}")
+        self.set_tray_state("idle")
         if self.popup_window is not None and self.popup_window.isVisible():
             self.popup_window._reset_audio_ui()
             self.popup_window.update_audio_status(f"⚠️ {error_msg}")
@@ -898,6 +904,7 @@ class WritingToolApp(QtWidgets.QApplication):
             self._finish_audio_and_paste(raw_transcript.strip())
             return
 
+        self.set_tray_state("processing", "Refinando pontuação e gramática na IA...")
         if self.popup_window is not None and self.popup_window.isVisible():
             self.popup_window.update_audio_status("Refinando pontuação e gramática na IA...")
 
@@ -907,7 +914,8 @@ class WritingToolApp(QtWidgets.QApplication):
                 if self.current_provider:
                     system_instruction = (
                         "Você é um assistente especialista em revisão de transcrições de áudio em Português do Brasil (PT-BR).\n"
-                        "Sua tarefa é corrigir a pontuação, acentuação, capitalização e erros gramaticais ou de transcrição fonética do texto ditado, "
+                        "Sua tarefa é corrigir a pontuação, acentuação, capitalização e erros gramaticais ou de transcrição fonética do texto ditado "
+                        "(ex: se o contexto falar de 'ícone ali embaixo' e o áudio transcrever 'sistema de rei / de três', corrija para 'sistema de tray'), "
                         "eliminando vícios de fala óbvios (como 'ééé', 'hmm'), mas mantendo fielmente o sentido, o vocabulário e o tom original de quem falou.\n"
                         "Retorne APENAS o texto final corrigido e pontuado, sem nenhum comentário, sem aspas extras e sem introduções."
                     )
@@ -943,6 +951,7 @@ class WritingToolApp(QtWidgets.QApplication):
         field) and paste the final text via Ctrl+V.
         """
         logging.info(f"Audio pipeline complete. Pasting text (len={len(final_text)})")
+        self.set_tray_state("idle")
         if self.popup_window is not None:
             self.popup_window.is_busy_processing = False
             self.popup_window.is_working_text = False
@@ -1086,6 +1095,14 @@ class WritingToolApp(QtWidgets.QApplication):
 
             self.output_queue = ""
 
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "set_tray_state",
+                QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(str, "processing"),
+                QtCore.Q_ARG(str, f"Processando: {option}...")
+            )
+
             logging.debug(f'Getting response from provider for option: {option}')
 
             if self.options[option]['open_in_window']:
@@ -1114,6 +1131,14 @@ class WritingToolApp(QtWidgets.QApplication):
                 self.show_message_signal.emit('Error - Rate Limit Hit', 'Whoops! You\'ve hit the per-minute rate limit of the Gemini API. Please try again in a few moments.\n\nIf this happens often, simply switch to a Gemini model with a higher usage limit in Settings.')
             else:
                 self.show_message_signal.emit('Error', f'An error occurred: {e}')
+        finally:
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "set_tray_state",
+                QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(str, "idle"),
+                QtCore.Q_ARG(str, "")
+            )
 
     def _close_working_popup(self):
         """If the popup is showing the orb (text mode working state), hide it and let focus return."""
@@ -1213,84 +1238,373 @@ class WritingToolApp(QtWidgets.QApplication):
         else:
             logging.debug('No new text to process')
 
+    @staticmethod
+    def _render_orb_mic_pixmap(size: int = 128, state: str = "idle") -> QtGui.QPixmap:
+        """
+        Render the Apple Intelligence 3D Glowing Orb with a crisp White Studio Microphone
+        in the center and a live status badge dot in the bottom-right corner.
+        States:
+          - 'idle'       : Iridescent Violet/Blue/Pink Orb + White Mic + Emerald Green Active Badge
+          - 'recording'  : Glowing Crimson/Orange Orb + White Mic + Red Recording Badge
+          - 'processing' : Electric Cyan/Purple Thinking Orb + White Mic + Cyan AI Badge
+          - 'paused'     : Dimmed Slate Orb + White Mic + Amber Pause Badge
+        """
+        pix = QtGui.QPixmap(size, size)
+        pix.fill(QtCore.Qt.GlobalColor.transparent)
+
+        p = QtGui.QPainter(pix)
+        p.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        s = float(size)
+        cx, cy = s * 0.5, s * 0.5
+        r = s * 0.43
+
+        # 1. Outer Aura Halo
+        halo = QtGui.QRadialGradient(cx, cy, s * 0.50)
+        if state == "recording":
+            halo.setColorAt(0.0, QtGui.QColor(255, 59, 48, 175))
+            halo.setColorAt(0.72, QtGui.QColor(255, 45, 85, 85))
+            halo.setColorAt(1.0, QtGui.QColor(255, 45, 85, 0))
+        elif state == "processing":
+            halo.setColorAt(0.0, QtGui.QColor(0, 212, 255, 185))
+            halo.setColorAt(0.72, QtGui.QColor(168, 85, 247, 90))
+            halo.setColorAt(1.0, QtGui.QColor(168, 85, 247, 0))
+        elif state == "paused":
+            halo.setColorAt(0.0, QtGui.QColor(120, 120, 135, 90))
+            halo.setColorAt(1.0, QtGui.QColor(120, 120, 135, 0))
+        else:
+            halo.setColorAt(0.0, QtGui.QColor(139, 92, 246, 170))
+            halo.setColorAt(0.68, QtGui.QColor(10, 132, 255, 85))
+            halo.setColorAt(1.0, QtGui.QColor(236, 72, 153, 0))
+
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(halo)
+        p.drawEllipse(QtCore.QPointF(cx, cy), s * 0.49, s * 0.49)
+
+        # 2. Main 3D Orb Sphere (Apple Intelligence Iridescent Mesh)
+        sphere = QtGui.QRadialGradient(cx - r * 0.28, cy - r * 0.30, r * 1.38)
+        if state == "recording":
+            sphere.setColorAt(0.0, QtGui.QColor(255, 138, 101))
+            sphere.setColorAt(0.38, QtGui.QColor(255, 45, 85))
+            sphere.setColorAt(0.78, QtGui.QColor(190, 18, 60))
+            sphere.setColorAt(1.0, QtGui.QColor(88, 12, 36))
+        elif state == "processing":
+            sphere.setColorAt(0.0, QtGui.QColor(103, 232, 249))
+            sphere.setColorAt(0.36, QtGui.QColor(14, 165, 233))
+            sphere.setColorAt(0.75, QtGui.QColor(139, 92, 246))
+            sphere.setColorAt(1.0, QtGui.QColor(46, 16, 101))
+        elif state == "paused":
+            sphere.setColorAt(0.0, QtGui.QColor(148, 163, 184))
+            sphere.setColorAt(0.55, QtGui.QColor(71, 85, 105))
+            sphere.setColorAt(1.0, QtGui.QColor(30, 41, 59))
+        else:
+            # Signature Apple Intelligence Violet -> Electric Blue -> Magenta -> Deep Cosmic Core
+            sphere.setColorAt(0.0, QtGui.QColor(96, 165, 250))
+            sphere.setColorAt(0.34, QtGui.QColor(139, 92, 246))
+            sphere.setColorAt(0.68, QtGui.QColor(219, 39, 119))
+            sphere.setColorAt(1.0, QtGui.QColor(30, 18, 68))
+
+        p.setBrush(sphere)
+        p.drawEllipse(QtCore.QPointF(cx, cy), r, r)
+
+        # 3. Iridescent Rim Light & Top-Left Glass Specular Glint
+        rim_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 115), max(1.2, s * 0.022))
+        p.setPen(rim_pen)
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QtCore.QPointF(cx, cy), r - s * 0.01, r - s * 0.01)
+
+        glint = QtGui.QRadialGradient(cx - r * 0.32, cy - r * 0.36, r * 0.55)
+        glint.setColorAt(0.0, QtGui.QColor(255, 255, 255, 130))
+        glint.setColorAt(0.5, QtGui.QColor(255, 255, 255, 35))
+        glint.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(glint)
+        p.drawEllipse(QtCore.QPointF(cx - r * 0.22, cy - r * 0.25), r * 0.52, r * 0.36)
+
+        # 4. Crisp White Studio Microphone in the Center of the Orb
+        mic_color = QtGui.QColor(255, 255, 255, 250 if state != "paused" else 185)
+        p.setBrush(mic_color)
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+
+        # Microphone capsule (rounded pill)
+        cap_w = s * 0.175
+        cap_h = s * 0.265
+        cap_rect = QtCore.QRectF(cx - cap_w * 0.5, cy - s * 0.19, cap_w, cap_h)
+        p.drawRoundedRect(cap_rect, cap_w * 0.5, cap_w * 0.5)
+
+        # Microphone U-cradle arc + stem + base
+        stroke_w = max(1.8, s * 0.046)
+        mic_pen = QtGui.QPen(mic_color, stroke_w, QtCore.Qt.PenStyle.SolidLine, QtCore.Qt.PenCapStyle.RoundCap)
+        p.setPen(mic_pen)
+        p.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+
+        arc_w = s * 0.31
+        arc_h = s * 0.25
+        arc_rect = QtCore.QRectF(cx - arc_w * 0.5, cy - s * 0.125, arc_w, arc_h)
+        # Draw bottom half of ellipse (180 deg to 360 deg in 1/16th degrees)
+        p.drawArc(arc_rect, 180 * 16, 180 * 16)
+
+        # Vertical stand stem & horizontal foot
+        stem_top = cy + s * 0.125
+        stem_bot = cy + s * 0.205
+        p.drawLine(QtCore.QPointF(cx, stem_top), QtCore.QPointF(cx, stem_bot))
+        foot_half = s * 0.085
+        p.drawLine(QtCore.QPointF(cx - foot_half, stem_bot), QtCore.QPointF(cx + foot_half, stem_bot))
+
+        # 5. Live Status Badge Dot (Bottom-Right Corner) so user always sees if it's active
+        badge_r = s * 0.135
+        bx = cx + r * 0.68
+        by = cy + r * 0.68
+
+        # Dark cutout ring around badge for contrast on any taskbar
+        p.setPen(QtCore.Qt.PenStyle.NoPen)
+        p.setBrush(QtGui.QColor(15, 15, 22, 235))
+        p.drawEllipse(QtCore.QPointF(bx, by), badge_r * 1.28, badge_r * 1.28)
+
+        if state == "recording":
+            badge_col = QtGui.QColor("#ff3b30")  # Bright Red (Recording)
+        elif state == "processing":
+            badge_col = QtGui.QColor("#00d4ff")  # Electric Cyan (AI Thinking)
+        elif state == "paused":
+            badge_col = QtGui.QColor("#ff9f0a")  # Amber (Paused)
+        else:
+            badge_col = QtGui.QColor("#30d158")  # Apple Emerald Green (Active & Ready)
+
+        p.setBrush(badge_col)
+        p.drawEllipse(QtCore.QPointF(bx, by), badge_r, badge_r)
+
+        p.end()
+        return pix
+
+    @classmethod
+    def _build_orb_mic_tray_icon(cls, state: str = "idle") -> QtGui.QIcon:
+        icon = QtGui.QIcon()
+        for sz in (32, 48, 64, 128):
+            icon.addPixmap(cls._render_orb_mic_pixmap(sz, state))
+        return icon
+
+    @staticmethod
+    def _promote_windows_tray_icon():
+        """
+        On Windows 11, promote our system tray icon in `HKCU\\Control Panel\\NotifyIconSettings`
+        (`IsPromoted = 1`) so it appears directly on the taskbar next to the clock instead
+        of being hidden inside the '^' overflow popup.
+        """
+        if not sys.platform.startswith("win32"):
+            return
+        try:
+            import winreg
+            base_path = r"Control Panel\NotifyIconSettings"
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, base_path, 0, winreg.KEY_READ) as parent:
+                num_subkeys, _, _ = winreg.QueryInfoKey(parent)
+                for i in range(num_subkeys):
+                    sub_name = winreg.EnumKey(parent, i)
+                    sub_path = f"{base_path}\\{sub_name}"
+                    try:
+                        with winreg.OpenKey(
+                            winreg.HKEY_CURRENT_USER,
+                            sub_path,
+                            0,
+                            winreg.KEY_READ | winreg.KEY_WRITE
+                        ) as sk:
+                            exe_path, _ = winreg.QueryValueEx(sk, "ExecutablePath")
+                            exe_lower = (exe_path or "").lower()
+                            if "python" in exe_lower or "writing" in exe_lower:
+                                winreg.SetValueEx(sk, "IsPromoted", 0, winreg.REG_DWORD, 1)
+                    except WindowsError:
+                        continue
+        except Exception as e:
+            logging.debug(f"NotifyIconSettings promote check: {e}")
+
+    @Slot(str, str)
+    def set_tray_state(self, state: str = "idle", custom_status: str = ""):
+        """
+        Update the System Tray Orb+Mic icon and tooltip to reflect the live state:
+        'idle' (🟢 Ativo), 'recording' (🔴 Gravando), 'processing' (🟣 Processando IA), or 'paused' (🟠 Pausado).
+        """
+        if not self.tray_icon:
+            return
+        if self.paused and state == "idle":
+            state = "paused"
+
+        self._tray_state = state
+        self.tray_icon.setIcon(self._build_orb_mic_tray_icon(state))
+
+        shortcut_str = (self.config or {}).get("shortcut", "ctrl+space").upper()
+        if state == "recording":
+            tip = f"🔴 Gravando Microfone... (Aperte Espaço para transcrever)\n{custom_status}".strip()
+        elif state == "processing":
+            tip = f"🟣 Apple Intelligence — {custom_status or 'Processando na IA...'}"
+        elif state == "paused":
+            tip = "🟠 Apple Intelligence — Pausado (Clique com botão direito para retomar)"
+        else:
+            tip = f"🟢 Apple Intelligence — Ativo e Pronto ({shortcut_str})"
+
+        self.tray_icon.setToolTip(tip)
+        if hasattr(self, "_tray_status_action") and self._tray_status_action:
+            status_label = {
+                "recording": "🔴 Status: Gravando Microfone...",
+                "processing": "🟣 Status: Processando na IA...",
+                "paused": "🟠 Status: Pausado",
+                "idle": f"🟢 Status: Ativo ({shortcut_str})",
+            }.get(state, f"🟢 Status: Ativo ({shortcut_str})")
+            self._tray_status_action.setText(status_label)
+
+    def _on_tray_icon_activated(self, reason):
+        """Left-clicking or double-clicking the tray Orb icon opens the Apple Intelligence popup."""
+        if reason in (
+            QtWidgets.QSystemTrayIcon.ActivationReason.Trigger,
+            QtWidgets.QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_popup()
+
     def create_tray_icon(self):
         """
-        Create the system tray icon for the application.
+        Create the system tray icon (Apple Intelligence Glowing Orb + Microphone in center)
+        and promote it to the visible Windows taskbar area.
         """
         if self.tray_icon:
             logging.debug('Tray icon already exists')
             return
 
-        logging.debug('Creating system tray icon')
-        icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons', 'app_icon.png')
-        if not os.path.exists(icon_path):
-            logging.warning(f'Tray icon not found at {icon_path}')
-            # Use a default icon if not found
-            self.tray_icon = QtWidgets.QSystemTrayIcon(self)
-        else:
-            self.tray_icon = QtWidgets.QSystemTrayIcon(QtGui.QIcon(icon_path), self)
-        # Set the tooltip (hover name) for the tray icon
-        self.tray_icon.setToolTip("WritingTools")
+        logging.debug('Creating Apple Intelligence Orb+Mic system tray icon')
+        # Also save updated high-res Orb+Mic icon to icons/app_icon.png so windows & shortcuts match
+        try:
+            icons_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icons')
+            os.makedirs(icons_dir, exist_ok=True)
+            orb_png_path = os.path.join(icons_dir, 'app_icon.png')
+            self._render_orb_mic_pixmap(256, "idle").save(orb_png_path, "PNG")
+        except Exception as e:
+            logging.debug(f"Could not save updated app_icon.png: {e}")
+
+        orb_icon = self._build_orb_mic_tray_icon("paused" if self.paused else "idle")
+        self.setWindowIcon(orb_icon)
+        self.tray_icon = QtWidgets.QSystemTrayIcon(orb_icon, self)
         self.tray_menu = QtWidgets.QMenu()
         self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_icon_activated)
 
         self.update_tray_menu()
         self.tray_icon.show()
-        logging.debug('Tray icon displayed')
+        self.set_tray_state("paused" if self.paused else "idle")
+
+        # Promote icon in Windows 11 taskbar after registration
+        QtCore.QTimer.singleShot(800, self._promote_windows_tray_icon)
+        logging.debug('Tray icon displayed and promoted')
 
     def update_tray_menu(self):
         """
-        Update the tray menu with all menu items, including pause functionality
-        and proper translations.
+        Update the system tray context menu with Apple dark/light styling and status indicator.
         """
         self.tray_menu.clear()
-
-        # Apply dark mode styles using darkdetect
         self.apply_dark_mode_styles(self.tray_menu)
 
+        shortcut_str = (self.config or {}).get("shortcut", "ctrl+space").upper()
+
+        # Live status header item
+        self._tray_status_action = self.tray_menu.addAction(
+            "🟠 Status: Pausado" if self.paused else f"🟢 Status: Ativo ({shortcut_str})"
+        )
+        self._tray_status_action.setEnabled(False)
+        self.tray_menu.addSeparator()
+
+        # Open Apple Intelligence Popup
+        open_action = self.tray_menu.addAction(f"🎙️ Abrir Apple Intelligence ({shortcut_str})")
+        open_action.triggered.connect(self._show_popup)
+
         # Settings menu item
-        settings_action = self.tray_menu.addAction(self._('Settings'))
+        settings_action = self.tray_menu.addAction("⚙️ Configurações")
         settings_action.triggered.connect(self.show_settings)
 
-        # Pause/Resume toggle action 
-        self.toggle_action = self.tray_menu.addAction(self._('Resume') if self.paused else self._('Pause'))
+        # Pause/Resume toggle action
+        self.toggle_action = self.tray_menu.addAction(
+            "▶️ Retomar Atalhos" if self.paused else "⏸️ Pausar Atalhos"
+        )
         self.toggle_action.triggered.connect(self.toggle_paused)
 
         # About menu item
-        about_action = self.tray_menu.addAction(self._('About'))
+        about_action = self.tray_menu.addAction("ℹ️ Sobre")
         about_action.triggered.connect(self.show_about)
 
+        self.tray_menu.addSeparator()
+
         # Exit menu item
-        exit_action = self.tray_menu.addAction(self._('Exit'))
+        exit_action = self.tray_menu.addAction("❌ Sair")
         exit_action.triggered.connect(self.exit_app)
-        
+
     def toggle_paused(self):
-        """Toggle the paused state of the application."""
+        """Toggle the paused state of the application and update tray icon badge."""
         logging.debug('Toggle paused state')
         self.paused = not self.paused
-        self.toggle_action.setText(self._('Resume') if self.paused else self._('Pause'))
+        self.toggle_action.setText("▶️ Retomar Atalhos" if self.paused else "⏸️ Pausar Atalhos")
+        self.set_tray_state("paused" if self.paused else "idle")
         logging.debug('App is paused' if self.paused else 'App is resumed')
 
     @staticmethod
     def apply_dark_mode_styles(menu):
         """
-        Apply styles to the tray menu based on system theme using darkdetect.
+        Apply Apple-style dark/light glass menu stylesheet to the system tray menu.
         """
         is_dark_mode = darkdetect.isDark()
-        palette = menu.palette()
-
         if is_dark_mode:
-            logging.debug('Tray icon dark')
-            # Dark mode colors
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#2d2d2d"))  # Dark background
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#ffffff"))  # White text
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: #1c1c22;
+                    color: #f5f5f7;
+                    border: 1px solid rgba(255, 255, 255, 0.16);
+                    border-radius: 10px;
+                    padding: 6px;
+                    font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+                    font-size: 12.5px;
+                }
+                QMenu::item {
+                    padding: 6px 14px;
+                    border-radius: 6px;
+                }
+                QMenu::item:selected {
+                    background-color: #0a84ff;
+                    color: #ffffff;
+                }
+                QMenu::item:disabled {
+                    color: #30d158;
+                    font-weight: 700;
+                }
+                QMenu::separator {
+                    height: 1px;
+                    background: rgba(255, 255, 255, 0.12);
+                    margin: 4px 8px;
+                }
+            """)
         else:
-            logging.debug('Tray icon light')
-            # Light mode colors
-            palette.setColor(QtGui.QPalette.Window, QtGui.QColor("#ffffff"))  # Light background
-            palette.setColor(QtGui.QPalette.WindowText, QtGui.QColor("#000000"))  # Black text
-
-        menu.setPalette(palette)
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: #f5f5f7;
+                    color: #1d1d1f;
+                    border: 1px solid rgba(0, 0, 0, 0.12);
+                    border-radius: 10px;
+                    padding: 6px;
+                    font-family: 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+                    font-size: 12.5px;
+                }
+                QMenu::item {
+                    padding: 6px 14px;
+                    border-radius: 6px;
+                }
+                QMenu::item:selected {
+                    background-color: #007aff;
+                    color: #ffffff;
+                }
+                QMenu::item:disabled {
+                    color: #248a3d;
+                    font-weight: 700;
+                }
+                QMenu::separator {
+                    height: 1px;
+                    background: rgba(0, 0, 0, 0.10);
+                    margin: 4px 8px;
+                }
+            """)
 
 
     """
