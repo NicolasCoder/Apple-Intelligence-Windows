@@ -110,10 +110,12 @@ class OnboardingWindow(QtWidgets.QWidget):
         self.shortcut = self.shortcut_input.text()
         self.theme = 'gradient' if is_gradient else 'plain'
         logging.debug(f'User selected shortcut: {self.shortcut}, theme: {self.theme}')
-        self.app.config = {
-            'shortcut': self.shortcut,
-            'theme': self.theme
-        }
+        if not self.app.config:
+            self.app.config = {}
+        self.app.config['shortcut'] = self.shortcut
+        self.app.config['theme'] = self.theme
+        self.app.save_config(self.app.config)
+        self.app.register_hotkey()
         self.show_api_key_input()
 
     def show_api_key_input(self):
@@ -122,7 +124,4 @@ class OnboardingWindow(QtWidgets.QWidget):
         self.close()
 
     def closeEvent(self, event):
-        # Emit the close signal
-        if not self.self_close:
-            self.close_signal.emit()
         super().closeEvent(event)

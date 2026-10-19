@@ -1,14 +1,17 @@
 import json
 import logging
+import math
 import os
 import sys
+import time
 from functools import partial
 
 from pynput import keyboard as pykeyboard
 from PySide6 import QtCore, QtGui, QtWidgets
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -19,7 +22,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.UIUtils import ThemeBackground, colorMode
+from ui.ThinkingOrb import ThinkingOrb
+from ui.UIUtils import colorMode
+
+try:
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+    HAS_WEBENGINE = True
+except Exception as _web_err:
+    logging.warning(f"QtWebEngine unavailable, using fallback: {_web_err}")
+    HAS_WEBENGINE = False
 
 _ = lambda x: x
 
@@ -27,6 +39,13 @@ _ = lambda x: x
 # Default `options.json` content to restore when the user presses "Reset"
 ################################################################################
 DEFAULT_OPTIONS_JSON = r"""{
+  "Corrigir PT-BR": {
+    "prefix": "Corrija todos os erros de digitação, espaços deslocados e ortografia deste texto em Português do Brasil mantendo o sentido e o tom natural:\n\n",
+    "instruction": "Você é um corretor ortográfico e gramatical especialista em Português Brasileiro (PT-BR), focado em reconstruir textos digitados muito rápido com erros severos de teclado.\nRegras obrigatórias:\n1. Corrija TODOS os erros de digitação, letras trocadas, falta de acentos, pontuação e espaços deslocados que partiram ou juntaram palavras (ex: 'heine u toe' -> 'hein, eu tô'; 'nao ifocu' -> 'não ficou'; 'noc aso' -> 'no caso'; 'taa qui' -> 'tá aqui'; 'rpa ess ecaso' -> 'pra esse caso').\n2. Corrija palavras trocadas por erro de digitação que não fazem sentido na frase (ex: 'escrevendo desde texto' -> 'escrevendo este texto'; 'rodo errado' -> 'todo errado'; 'co perfeição' -> 'com perfeição'; 'ams' -> 'mas').\n3. Mantenha o tom original da mensagem e NUNCA troque gírias brasileiras válidas por outras palavras (ex: mantenha 'tanka' em 'ela tanka no nível gratuito', mantenha 'mano', 'tá', 'pra', 'kkk', 'de boa', 'bora', 'brabão' e termos tech como 'Groq', 'Gemma', 'Electron', 'API').\n4. NUNCA responda à mensagem, NUNCA adicione comentários ou explicações. Retorne APENAS o texto final corrigido.",
+    "icon": "icons/check",
+    "open_in_window": false,
+    "hotkey": "ctrl+shift+space"
+  },
   "Proofread": {
     "prefix": "Proofread this:\n\n",
     "instruction": "You are a grammar proofreading assistant.\nOutput ONLY the corrected text without any additional comments.\nMaintain the original text structure and writing style.\nRespond in the same language as the input (e.g., English US, French).\nDo not answer or respond to the user's text content.\nIf the text is absolutely incompatible with this (e.g., totally random gibberish), output \"ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST\".",
@@ -83,6 +102,9 @@ DEFAULT_OPTIONS_JSON = r"""{
   }
 }"""
 
+SUPPORTED_AUDIO_EXTENSIONS = ('.ogg', '.mp3', '.wav', '.m4a', '.opus', '.flac', '.aac', '.mp4', '.webm')
+
+
 class ButtonEditDialog(QDialog):
     """
     Dialog for editing or creating a button's properties
@@ -96,25 +118,22 @@ class ButtonEditDialog(QDialog):
             "icon": "icons/magnifying-glass",
             "open_in_window": False
         }
-        # The hotkey input is created in init_ui; tracked here so the
-        # parent window can read it back from get_button_data().
         self.hotkey_input = None
         self.setWindowTitle(title)
         self.init_ui()
-        
+
     def init_ui(self):
         layout = QVBoxLayout(self)
-        
-        # Name
+
         name_label = QLabel("Button Name:")
         name_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
         self.name_input = QLineEdit()
         self.name_input.setStyleSheet(f"""
             QLineEdit {{
                 padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
+                border: 1px solid {'#555' if colorMode == 'dark' else '#ccc'};
                 border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
+                background-color: {'#2c2c2e' if colorMode == 'dark' else 'white'};
                 color: {'#fff' if colorMode == 'dark' else '#000'};
             }}
         """)
@@ -122,57 +141,40 @@ class ButtonEditDialog(QDialog):
             self.name_input.setText(self.button_data["name"])
         layout.addWidget(name_label)
         layout.addWidget(self.name_input)
-        
-        # Instruction (changed to a multiline QPlainTextEdit)
+
         instruction_label = QLabel("What should your AI do with your selected text? (System Instruction)")
         instruction_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
         self.instruction_input = QPlainTextEdit()
         self.instruction_input.setStyleSheet(f"""
             QPlainTextEdit {{
                 padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
+                border: 1px solid {'#555' if colorMode == 'dark' else '#ccc'};
                 border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
+                background-color: {'#2c2c2e' if colorMode == 'dark' else 'white'};
                 color: {'#fff' if colorMode == 'dark' else '#000'};
             }}
         """)
         self.instruction_input.setPlainText(self.button_data.get("instruction", ""))
         self.instruction_input.setMinimumHeight(100)
-        self.instruction_input.setPlaceholderText("""Examples:
-    - Fix / improve / explain this code.
-    - Make it funny.
-    - Add emojis!
-    - Roast this!
-    - Translate to English.
-    - Make the text title case.
-    - If it's all caps, make it all small, and vice-versa.
-    - Write a reply to this.
-    - Analyse potential biases in this news article.""")
         layout.addWidget(instruction_label)
         layout.addWidget(self.instruction_input)
-        
-        # open_in_window
+
         display_label = QLabel("How should your AI response be shown?")
         display_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
         layout.addWidget(display_label)
-        
+
         radio_layout = QHBoxLayout()
         self.replace_radio = QRadioButton("Replace the selected text")
         self.window_radio = QRadioButton("In a pop-up window (with follow-up support)")
         for r in (self.replace_radio, self.window_radio):
             r.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'};")
-        
+
         self.replace_radio.setChecked(not self.button_data.get("open_in_window", False))
         self.window_radio.setChecked(self.button_data.get("open_in_window", False))
-
         radio_layout.addWidget(self.replace_radio)
         radio_layout.addWidget(self.window_radio)
         layout.addLayout(radio_layout)
 
-        # Direct hotkey (optional). Lets the user fire this button from
-        # anywhere without opening the popup first. Stored per-button in
-        # options.json under a "hotkey" key; absent = no hotkey, which is
-        # how every existing/legacy button starts.
         hotkey_label = QLabel("Direct hotkey (optional):")
         hotkey_label.setStyleSheet(f"color: {'#fff' if colorMode == 'dark' else '#333'}; font-weight: bold;")
         layout.addWidget(hotkey_label)
@@ -181,856 +183,659 @@ class ButtonEditDialog(QDialog):
         self.hotkey_input.setStyleSheet(f"""
             QLineEdit {{
                 padding: 8px;
-                border: 1px solid {'#777' if colorMode == 'dark' else '#ccc'};
+                border: 1px solid {'#555' if colorMode == 'dark' else '#ccc'};
                 border-radius: 8px;
-                background-color: {'#333' if colorMode == 'dark' else 'white'};
+                background-color: {'#2c2c2e' if colorMode == 'dark' else 'white'};
                 color: {'#fff' if colorMode == 'dark' else '#000'};
             }}
         """)
-        self.hotkey_input.setPlaceholderText("e.g. ctrl+j  (leave blank for none)")
+        self.hotkey_input.setPlaceholderText("e.g. ctrl+shift+space  (leave blank for none)")
         self.hotkey_input.setText(self.button_data.get("hotkey", ""))
         layout.addWidget(self.hotkey_input)
 
-        hotkey_hint = QLabel(
-            "Press this combination from anywhere to run this button "
-            "directly, skipping the popup.\nUse '+' between keys, e.g. "
-            "ctrl+j or ctrl+shift+p."
-        )
-        hotkey_hint.setStyleSheet(
-            f"color: {'#bbb' if colorMode == 'dark' else '#555'}; font-size: 12px;"
-        )
-        hotkey_hint.setWordWrap(True)
-        layout.addWidget(hotkey_hint)
-
-        # OK & Cancel
         btn_layout = QHBoxLayout()
         ok_button = QPushButton("OK")
         cancel_button = QPushButton("Cancel")
         for btn in (ok_button, cancel_button):
             btn.setStyleSheet(f"""
                 QPushButton {{
-                    background-color: {'#444' if colorMode == 'dark' else '#f0f0f0'};
+                    background-color: {'#3a3a3c' if colorMode == 'dark' else '#e5e5ea'};
                     color: {'#fff' if colorMode == 'dark' else '#000'};
-                    border: 1px solid {'#666' if colorMode == 'dark' else '#ccc'};
-                    border-radius: 5px;
+                    border: 1px solid {'#555' if colorMode == 'dark' else '#ccc'};
+                    border-radius: 8px;
                     padding: 8px;
                     min-width: 100px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#555' if colorMode == 'dark' else '#e0e0e0'};
                 }}
             """)
         btn_layout.addWidget(ok_button)
         btn_layout.addWidget(cancel_button)
         layout.addLayout(btn_layout)
-        
+
         ok_button.clicked.connect(self.accept)
         cancel_button.clicked.connect(self.reject)
-        
-        self.setStyleSheet(f"""
-            QDialog {{
-                background-color: {'#222' if colorMode == 'dark' else '#f5f5f5'};
-                border-radius: 10px;
-            }}
-        """)
+        self.setStyleSheet(f"QDialog {{ background-color: {'#1c1c1e' if colorMode == 'dark' else '#f2f2f7'}; border-radius: 14px; }}")
 
     def get_button_data(self):
         data = {
             "name": self.name_input.text(),
             "prefix": "Make this change to the following text:\n\n",
-            # Retrieve multiline text
             "instruction": self.instruction_input.toPlainText(),
             "icon": "icons/custom",
             "open_in_window": self.window_radio.isChecked()
         }
-        # Only include `hotkey` if the user actually typed one. Old
-        # configs and buttons-without-hotkeys stay shaped exactly as
-        # before — no empty-string clutter in options.json.
         hotkey = self.hotkey_input.text().strip().lower() if self.hotkey_input else ""
         if hotkey:
             data["hotkey"] = hotkey
         return data
 
-class DraggableButton(QtWidgets.QPushButton):
-    def __init__(self, parent_popup, key, text):
-        super().__init__(text, parent_popup)
-        self.popup = parent_popup
-        self.key = key
-        self.drag_start_position = None
-        self.setAcceptDrops(True)
-        self.icon_container = None
 
-        # Enable mouse tracking and hover events, and styled background
-        self.setMouseTracking(True)
-        self.setAttribute(QtCore.Qt.WA_Hover, True)
-        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
-
-        # Use a dynamic property "hover" (default False)
-        self.setProperty("hover", False)
-
-        # Set fixed size (adjust as needed)
-        self.setFixedSize(120, 40)
-
-        # Define base style using the dynamic property instead of the :hover pseudo-class
-        self.base_style = f"""
-            QPushButton {{
-                background-color: {"#444" if colorMode=="dark" else "white"};
-                border: 1px solid {"#666" if colorMode=="dark" else "#ccc"};
-                border-radius: 8px;
-                padding: 10px;
-                font-size: 14px;
-                text-align: left;
-                color: {"#fff" if colorMode=="dark" else "#000"};
-            }}
-            QPushButton[hover="true"] {{
-                background-color: {"#555" if colorMode=="dark" else "#f0f0f0"};
-            }}
+if HAS_WEBENGINE:
+    class _ElectronBridgePage(QWebEnginePage):
         """
-        self.setStyleSheet(self.base_style)
-        logging.debug("DraggableButton initialized")
+        Intercepts `WT_IPC:{...}` messages emitted from `electron_ui/index.html`
+        with sub-millisecond latency.
+        """
+        ipc_received = QtCore.Signal(dict)
 
-    def enterEvent(self, event):
-        # Only update the hover property if NOT in edit mode.
-        if not self.popup.edit_mode:
-            self.setProperty("hover", True)
-            self.style().unpolish(self)
-            self.style().polish(self)
-        super().enterEvent(event)
+        def javaScriptConsoleMessage(self, level, message, lineNumber, sourceID):
+            if isinstance(message, str) and message.startswith("WT_IPC:"):
+                raw = message[7:]
+                try:
+                    payload = json.loads(raw)
+                    self.ipc_received.emit(payload)
+                except Exception as e:
+                    logging.error(f"Invalid WT_IPC payload: {e}")
 
-    def leaveEvent(self, event):
-        if not self.popup.edit_mode:
-            self.setProperty("hover", False)
-            self.style().unpolish(self)
-            self.style().polish(self)
-        super().leaveEvent(event)
 
-    def mousePressEvent(self, event):
-        if event.button() == QtCore.Qt.LeftButton:
-            if self.popup.edit_mode:
-                self.drag_start_position = event.pos()
-                event.accept()
-                return
-        super().mousePressEvent(event)
-            
-    def mouseMoveEvent(self, event):
-        if not (event.buttons() & QtCore.Qt.LeftButton) or not self.drag_start_position:
-            return
+class _DummyFocusProxy:
+    """Compatibility proxy for `self.popup_window.custom_input.setFocus()`."""
+    def __init__(self, popup):
+        self._popup = popup
 
-        distance = (event.pos() - self.drag_start_position).manhattanLength()
-        if distance < QtWidgets.QApplication.startDragDistance():
-            return
+    def setFocus(self):
+        self._popup.focus_text_input()
 
-        if self.popup.edit_mode:
-            drag = QtGui.QDrag(self)
-            mime_data = QtCore.QMimeData()
-            idx = self.popup.button_widgets.index(self)
-            mime_data.setData("application/x-button-index", str(idx).encode())
-            drag.setMimeData(mime_data)
-
-            pixmap = self.grab()
-            drag.setPixmap(pixmap)
-            drag.setHotSpot(event.pos())
-
-            self.drag_start_position = None
-            drop_action = drag.exec_(QtCore.Qt.MoveAction)
-            logging.debug(f"Drag completed with action: {drop_action}")
-
-    def dragEnterEvent(self, event):
-        if self.popup.edit_mode and event.mimeData().hasFormat("application/x-button-index"):
-            event.acceptProposedAction()
-            self.setStyleSheet(self.base_style + """
-                QPushButton {
-                    border: 2px dashed #666;
-                }
-            """)
-        else:
-            event.ignore()
-
-    def dragLeaveEvent(self, event):
-        self.setStyleSheet(self.base_style)
-        event.accept()
-
-    def dropEvent(self, event):
-        if not self.popup.edit_mode or not event.mimeData().hasFormat("application/x-button-index"):
-            event.ignore()
-            return
-
-        source_idx = int(event.mimeData().data("application/x-button-index").data().decode())
-        target_idx = self.popup.button_widgets.index(self)
-
-        if source_idx != target_idx:
-            bw = self.popup.button_widgets
-            bw[source_idx], bw[target_idx] = bw[target_idx], bw[source_idx]
-            self.popup.rebuild_grid_layout()
-            self.popup.update_json_from_grid()
-
-        self.setStyleSheet(self.base_style)
-        event.setDropAction(QtCore.Qt.MoveAction)
-        event.acceptProposedAction()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.icon_container:
-            self.icon_container.setGeometry(0, 0, self.width(), self.height())
 
 class CustomPopupWindow(QtWidgets.QWidget):
-    def __init__(self, app):
+    """
+    Ultra-Minimalist Apple Intelligence Dual-Mode Floating Overlay powered by
+    Chromium/Electron (`electron_ui/index.html`) + `thinking-orbs` 2D Canvas:
+
+    1) Modo Áudio (when NO text is selected on Ctrl+Space):
+       - Automatically starts recording microphone immediately on open!
+       - Pressing `Space` (or `Enter` or clicking the Orb/pill) stops recording
+         and runs faster-whisper -> LLM refinement -> auto-paste (Ctrl+V).
+       - Real-time FFT Pitch & 8-band frequency reactivity on the Orb
+         (Grave = deep indigo/violet swell, Médio = Apple Intelligence ribbon,
+         Agudo = crystalline cyan/gold star ripples).
+    2) Modo Texto (when text IS selected on Ctrl+Space):
+       - Frosted glass instruction bar + "Corrigir PT-BR ↵" + minimalist grid.
+       - Transitions smoothly to the working Orb state while AI processes.
+    """
+    AUDIO_SIZE = (296, 224)
+    WORKING_SIZE = (296, 214)
+    TEXT_WIDTH = 326
+
+    def __init__(self, app, initial_mode="text", auto_start_recording=True):
         super().__init__()
         self.app = app
         self.edit_mode = False
+        self.current_mode = initial_mode  # "text" or "audio"
+        self.is_busy_processing = False
+        self.is_working_text = False
+        self._page_ready = False
+        self._pending_js = []
+        self._record_start_ts = 0.0
+        self._space_grace_until = 0.0
+        self._last_toggle_ts = 0.0
+        self._space_was_down = False
+        self._opened_ts = time.time()
 
-        self.drag_label = None
-        self.edit_button = None
-        self.reset_button = None
-        self.close_button = None
-        self.custom_input = None
-        self.input_area = None
-        
-        self.button_widgets = []
+        self.custom_input = _DummyFocusProxy(self)
+        self.web_view = None
 
-        logging.debug('Initializing CustomPopupWindow')
+        self.record_timer = QtCore.QTimer(self)
+        self.record_timer.setInterval(50)
+        self.record_timer.timeout.connect(self._update_recording_timer)
+
+        self.setAcceptDrops(True)
         self.init_ui()
+        self.open_in_mode(initial_mode, auto_record=(initial_mode == "audio" and auto_start_recording))
 
     def init_ui(self):
-        logging.debug('Setting up CustomPopupWindow UI')
-        self.setWindowFlags(QtCore.Qt.WindowStaysOnTopHint | QtCore.Qt.FramelessWindowHint)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground)
-        self.setWindowTitle("Writing Tools")
-        
-        main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setContentsMargins(0,0,0,0)
-        
-        self.background = ThemeBackground(
-            self, 
-            self.app.config.get('theme','gradient'),
-            is_popup=True,
-            border_radius=10
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.Tool
         )
-        main_layout.addWidget(self.background)
-        
-        content_layout = QtWidgets.QVBoxLayout(self.background)
-        # Margin Control
-        content_layout.setContentsMargins(10, 4, 10, 10)
-        content_layout.setSpacing(10)
-        
-        # TOP BAR LAYOUT & STYLE
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 0)
-        top_bar.setSpacing(0)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setWindowTitle("Writing Tools")
 
-        # The "Edit"/"Done" button (left), same exact size as close button
-        self.edit_button = QPushButton()
-        pencil_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons',
-                                'pencil' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(pencil_icon):
-            self.edit_button.setIcon(QtGui.QIcon(pencil_icon))
-        # Reduced size to 24x24 to shrink top bar
-        self.edit_button.setFixedSize(24, 24)
-        self.edit_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-                margin-top: 3px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
-        self.edit_button.clicked.connect(self.toggle_edit_mode)
-        top_bar.addWidget(self.edit_button, 0, Qt.AlignLeft)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        # The label "Drag to rearrange" (BOLD as requested)
-        self.drag_label = QLabel("Drag to rearrange")
-        self.drag_label.setStyleSheet(f"""
-            color: {'#fff' if colorMode=='dark' else '#333'};
-            font-size: 14px;
-            font-weight: bold; /* <--- BOLD TEXT */
-        """)
-        self.drag_label.setAlignment(Qt.AlignCenter)
-        self.drag_label.hide()
-        top_bar.addWidget(self.drag_label, 1, Qt.AlignVCenter | Qt.AlignHCenter)
+        if HAS_WEBENGINE:
+            self.web_view = QWebEngineView(self)
+            self.web_page = _ElectronBridgePage(self.web_view)
+            self.web_page.ipc_received.connect(self._on_ipc_message)
+            self.web_view.setPage(self.web_page)
+            self.web_view.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.web_view.setStyleSheet("background: transparent; border: none;")
+            self.web_page.setBackgroundColor(QtCore.Qt.GlobalColor.transparent)
+            self.web_view.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
+            # Let parent widget handle file drops
+            self.web_view.setAcceptDrops(False)
 
-        # The "Reset" button (edit-mode only) - also 24x24
-        self.reset_button = QPushButton()
-        reset_icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons',
-                                    'restore' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(reset_icon_path):
-            self.reset_button.setIcon(QtGui.QIcon(reset_icon_path))
-        self.reset_button.setText("")
-        self.reset_button.setFixedSize(24, 24)
-        self.reset_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
-        self.reset_button.clicked.connect(self.on_reset_clicked)
-        self.reset_button.hide()
-        top_bar.addWidget(self.reset_button, 0, Qt.AlignRight)
+            base_root = getattr(sys, '_MEIPASS', os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")))
+            html_path = os.path.abspath(os.path.join(base_root, "electron_ui", "index.html"))
+            if not os.path.exists(html_path):
+                html_path = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "electron_ui", "index.html"))
+            self.web_view.loadFinished.connect(self._on_web_load_finished)
+            self.web_view.load(QUrl.fromLocalFile(html_path))
+            layout.addWidget(self.web_view)
 
-        # Close button block:
-        self.close_button = QPushButton("×")
-        self.close_button.setFixedSize(24, 24)
-        self.close_button.setStyleSheet(f"""
-            QPushButton {{
-                background-color: transparent;
-                color: {'#fff' if colorMode=='dark' else '#333'};
-                font-size: 20px;   /* bigger text */
-                font-weight: bold; /* bold text */
-                border: none;
-                border-radius: 6px;
-                padding: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-            }}
-        """)
-        self.close_button.clicked.connect(self.close)
-        top_bar.addWidget(self.close_button, 0, Qt.AlignRight)
-        content_layout.addLayout(top_bar)
-
-        
-        # Input area (hidden in edit mode)
-        self.input_area = QWidget()
-        input_layout = QHBoxLayout(self.input_area)
-        input_layout.setContentsMargins(0,0,0,0)
-        
-        self.custom_input = QLineEdit()
-        self.custom_input.setPlaceholderText(_("Describe your change..."))
-        self.custom_input.setStyleSheet(f"""
-            QLineEdit {{
-                padding: 8px;
-                border: 1px solid {'#777' if colorMode=='dark' else '#ccc'};
-                border-radius: 8px;
-                background-color: {'#333' if colorMode=='dark' else 'white'};
-                color: {'#fff' if colorMode=='dark' else '#000'};
-            }}
-        """)
-        self.custom_input.returnPressed.connect(self.on_custom_change)
-        input_layout.addWidget(self.custom_input)
-        
-        send_btn = QPushButton()
-        send_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons',
-                                'send' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(send_icon):
-            send_btn.setIcon(QtGui.QIcon(send_icon))
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {'#2e7d32' if colorMode=='dark' else '#4CAF50'};
-                border: none;
-                border-radius: 8px;
-                padding: 5px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#1b5e20' if colorMode=='dark' else '#45a049'};
-            }}
-        """)
-        send_btn.setFixedSize(self.custom_input.sizeHint().height(),
-                            self.custom_input.sizeHint().height())
-        send_btn.clicked.connect(self.on_custom_change)
-        input_layout.addWidget(send_btn)
-        
-        content_layout.addWidget(self.input_area)
-
-        self.build_buttons_list()
-        self.rebuild_grid_layout(content_layout)
-
-        # show update notice if applicable
-        if self.app.config.get("update_available", False):
-            update_label = QLabel()
-            update_label.setOpenExternalLinks(True)
-            update_label.setText('<a href="https://github.com/theJayTea/WritingTools/releases" style="color:rgb(255, 0, 0); text-decoration: underline; font-weight: bold;">There\'s an update! :D Download now.</a>')
-            update_label.setStyleSheet("margin-top: 10px;")
-            content_layout.addWidget(update_label, alignment=QtCore.Qt.AlignCenter)
-        
-        logging.debug('CustomPopupWindow UI setup complete')
         self.installEventFilter(self)
-        QtCore.QTimer.singleShot(250, lambda: self.custom_input.setFocus())
+
+    def _run_js(self, code: str):
+        if not HAS_WEBENGINE or self.web_view is None:
+            return
+        if self._page_ready:
+            self.web_page.runJavaScript(code)
+        else:
+            self._pending_js.append(code)
+
+    def _on_web_load_finished(self, ok: bool):
+        self._page_ready = True
+        self._sync_full_ui_to_js()
+        while self._pending_js:
+            js = self._pending_js.pop(0)
+            self.web_page.runJavaScript(js)
+
+    def _sync_full_ui_to_js(self):
+        is_light = (colorMode != "dark")
+        self._run_js(f"window.setTheme({ 'true' if is_light else 'false' });")
+
+        # Sync text options
+        opts = list((self.load_options() or {}).keys())
+        self._run_js(f"window.populateOptions({json.dumps(opts, ensure_ascii=False)});")
+
+        # Sync microphone devices
+        self._sync_mics_to_js()
+
+        # Sync current view mode
+        view_mode = "working" if self.is_working_text else self.current_mode
+        self._run_js(f"window.setViewMode({json.dumps(view_mode)});")
+
+        # Sync recording/processing state
+        is_rec = bool(hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording)
+        self._run_js(f"window.setOrbState({'true' if is_rec else 'false'}, {'true' if self.is_busy_processing else 'false'});")
+
+    def _sync_mics_to_js(self):
+        devices = []
+        if hasattr(self.app, "audio_transcriber"):
+            devices = self.app.audio_transcriber.list_input_devices()
+        saved_idx = (self.app.config or {}).get("microphone_device", None)
+        saved_name = (self.app.config or {}).get("microphone_device_name", "")
+
+        selected_idx = None
+        mic_items = []
+        for dev_idx, dev_label in devices:
+            mic_items.append({"index": dev_idx, "label": dev_label})
+            if saved_idx is not None and dev_idx == saved_idx:
+                selected_idx = dev_idx
+            elif selected_idx is None and saved_name and saved_name.lower() in dev_label.lower():
+                selected_idx = dev_idx
+
+        if hasattr(self.app, "audio_transcriber"):
+            self.app.audio_transcriber.set_device(selected_idx)
+
+        self._run_js(
+            f"window.populateMics({json.dumps(mic_items, ensure_ascii=False)}, {json.dumps(selected_idx)});"
+        )
+
+    def _compute_text_height(self) -> int:
+        opts = [k for k in (self.load_options() or {}).keys() if k not in ("Custom", "Corrigir PT-BR")]
+        rows = max(1, math.ceil(len(opts) / 2))
+        return min(360, 134 + rows * 36)
+
+    def _resize_for_mode(self, mode: str):
+        if mode == "audio":
+            w, h = self.AUDIO_SIZE
+        elif mode == "working":
+            w, h = self.WORKING_SIZE
+        else:
+            w, h = self.TEXT_WIDTH, self._compute_text_height()
+        self.setFixedSize(w, h)
+        if self.web_view is not None:
+            self.web_view.resize(w, h)
+
+    def open_in_mode(self, mode: str, auto_record: bool = False):
+        """
+        Prepare and switch the popup into 'audio' or 'text' mode.
+        If `mode == 'audio'` and `auto_record=True`, immediately starts microphone recording!
+        """
+        self._opened_ts = time.time()
+        self.is_working_text = False
+        self.is_busy_processing = False
+        self.current_mode = mode
+        self._resize_for_mode(mode)
+        self._sync_full_ui_to_js()
+
+        if mode == "audio":
+            if auto_record:
+                self.start_recording_auto()
+            else:
+                self._reset_audio_ui()
+        else:
+            if hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording:
+                self.record_timer.stop()
+                self.app.audio_transcriber.cancel_recording()
+            self.focus_text_input()
+
+    def set_mode(self, mode: str):
+        """Switch between 'text' and 'audio' mode."""
+        if self.is_working_text:
+            return
+        self.current_mode = mode
+        self._resize_for_mode(mode)
+        self._run_js(f"window.setViewMode({json.dumps(mode)});")
+        if mode == "audio":
+            if not self.app.audio_transcriber.is_recording and not self.is_busy_processing:
+                self.start_recording_auto()
+        else:
+            if hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording:
+                self.record_timer.stop()
+                self.app.audio_transcriber.cancel_recording()
+                self._run_js("window.setOrbState(false, false);")
+            self.focus_text_input()
+
+    def focus_text_input(self):
+        if self.web_view is not None:
+            self.web_view.setFocus()
+            self._run_js("setTimeout(() => { const el = document.getElementById('customInput'); if (el) el.focus(); }, 30);")
+
+    def force_foreground_focus(self):
+        """Ensure the popup receives keyboard focus on Windows so pressing Space works hands-free."""
+        try:
+            self.raise_()
+            self.activateWindow()
+            if self.web_view is not None:
+                self.web_view.setFocus()
+            if sys.platform == "win32":
+                import ctypes
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+                hwnd = int(self.winId())
+                fg_hwnd = user32.GetForegroundWindow()
+                if fg_hwnd and fg_hwnd != hwnd:
+                    fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None)
+                    cur_tid = kernel32.GetCurrentThreadId()
+                    if fg_tid != cur_tid:
+                        user32.AttachThreadInput(fg_tid, cur_tid, True)
+                        user32.SetForegroundWindow(hwnd)
+                        user32.SetFocus(hwnd)
+                        user32.AttachThreadInput(fg_tid, cur_tid, False)
+                    else:
+                        user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            logging.debug(f"force_foreground_focus notice: {e}")
+
+    # ─── IPC DISPATCH FROM ELECTRON/CHROMIUM HTML UI ─────────────────────────
+
+    @QtCore.Slot(dict)
+    def _on_ipc_message(self, payload: dict):
+        action = payload.get("action", "")
+        if action == "close":
+            self.close_popup()
+        elif action == "start_drag":
+            wh = self.windowHandle()
+            if wh is not None:
+                wh.startSystemMove()
+        elif action == "switch_mode":
+            new_mode = payload.get("mode", "audio")
+            self.set_mode(new_mode)
+        elif action == "toggle_record":
+            self.toggle_microphone_recording()
+        elif action == "space_stop_or_toggle":
+            if time.time() < self._space_grace_until:
+                return
+            self.toggle_microphone_recording()
+        elif action == "browse_audio":
+            self.browse_audio_file()
+        elif action == "select_mic":
+            dev_idx = payload.get("index", None)
+            dev_label = payload.get("label", "")
+            self._on_mic_selected(dev_idx, dev_label)
+        elif action == "open_settings":
+            self.open_settings_from_popup()
+        elif action == "edit_buttons":
+            self._open_quick_button_manager()
+        elif action == "run_option":
+            key = payload.get("key", "Corrigir PT-BR")
+            self.on_generic_instruction(key)
+        elif action == "run_custom":
+            txt = (payload.get("text") or "").strip()
+            if txt:
+                self._run_text_option("Custom", txt)
+            else:
+                self.on_quick_pt_br()
+
+    def _on_mic_selected(self, dev_idx, dev_label: str):
+        logging.info(f"User selected microphone: {dev_label} (index={dev_idx})")
+        was_recording = bool(hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording)
+        if was_recording:
+            self.record_timer.stop()
+            self.app.audio_transcriber.cancel_recording()
+
+        if hasattr(self.app, "audio_transcriber"):
+            self.app.audio_transcriber.set_device(dev_idx)
+
+        if self.app.config is not None:
+            self.app.config["microphone_device"] = dev_idx
+            self.app.config["microphone_device_name"] = dev_label
+            if hasattr(self.app, "save_config"):
+                self.app.save_config(self.app.config)
+
+        self._sync_mics_to_js()
+        if was_recording:
+            self.start_recording_auto()
+
+    # ─── AUDIO RECORDING (AUTO-START + SPACE TO FINISH) ──────────────────────
+
+    def start_recording_auto(self):
+        """Immediately start microphone recording when Audio Mode opens."""
+        if self.is_busy_processing:
+            return
+        transcriber = self.app.audio_transcriber
+        if transcriber.is_recording:
+            return
+
+        # Grace window so releasing Ctrl+Space does not trigger Space-to-stop
+        self._space_grace_until = time.time() + 0.50
+        self._last_toggle_ts = time.time()
+        self._record_start_ts = time.time()
+        self._space_was_down = True
+
+        transcriber.start_recording()
+        self._run_js("window.setOrbState(true, false);")
+        self._run_js("window.setAudioStatus('Ouvindo...', '0:00');")
+        self.record_timer.start()
+
+    def finish_recording_and_transcribe(self):
+        """Stop active microphone recording and immediately launch Whisper + LLM pipeline."""
+        if self.is_busy_processing:
+            return
+        transcriber = self.app.audio_transcriber
+        if not transcriber.is_recording:
+            return
+        self._last_toggle_ts = time.time()
+        self.record_timer.stop()
+        wav_path = transcriber.stop_recording()
+        if wav_path:
+            self._begin_audio_processing(wav_path, delete_after=True)
+        else:
+            self._reset_audio_ui()
+
+    def toggle_microphone_recording(self):
+        if self.is_busy_processing:
+            return
+        now = time.time()
+        if now - self._last_toggle_ts < 0.32:
+            return
+        transcriber = self.app.audio_transcriber
+        if not transcriber.is_recording:
+            self.start_recording_auto()
+        else:
+            self.finish_recording_and_transcribe()
+
+    def _update_recording_timer(self):
+        if not hasattr(self.app, "audio_transcriber") or not self.app.audio_transcriber.is_recording:
+            self.record_timer.stop()
+            return
+
+        now = time.time()
+        elapsed = max(0, int(now - self._record_start_ts))
+        mins, secs = divmod(elapsed, 60)
+        timer_str = f"{mins}:{secs:02d}"
+        self._run_js(f"window.setAudioStatus(null, {json.dumps(timer_str)});")
+
+        # Global Space-key edge detector while recording (works even if OS focus stayed in target app!)
+        if sys.platform == "win32" and now >= self._space_grace_until:
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                space_down = bool(user32.GetAsyncKeyState(0x20) & 0x8000)
+                ctrl_down = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+                if space_down and not ctrl_down and not self._space_was_down:
+                    self._space_was_down = True
+                    logging.info("Spacebar pressed during recording -> stopping and transcribing!")
+                    self.finish_recording_and_transcribe()
+                    return
+                self._space_was_down = space_down
+            except Exception:
+                pass
+
+    def browse_audio_file(self):
+        if self.is_busy_processing:
+            return
+        if hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording:
+            self.record_timer.stop()
+            self.app.audio_transcriber.cancel_recording()
+            self._run_js("window.setOrbState(false, false);")
+
+        self.is_busy_processing = True
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecionar Arquivo de Áudio",
+            "",
+            "Arquivos de Áudio (*.ogg *.mp3 *.wav *.m4a *.opus *.flac *.aac *.mp4 *.webm);;Todos os Arquivos (*.*)"
+        )
+        self.is_busy_processing = False
+        if file_path and os.path.exists(file_path):
+            self._begin_audio_processing(file_path, delete_after=False)
+
+    def _begin_audio_processing(self, file_path: str, delete_after: bool = False):
+        self.current_mode = "audio"
+        self.is_busy_processing = True
+        self._resize_for_mode("audio")
+        self._run_js("window.setViewMode('audio');")
+        self._run_js("window.setOrbState(false, true);")
+        self._run_js("window.setAudioStatus('Transcrevendo...', '');")
+        self.app.process_audio_file(file_path, delete_after=delete_after)
+
+    @QtCore.Slot(str)
+    def update_audio_status(self, status_text: str):
+        short = status_text
+        if "Transcrevendo" in status_text:
+            short = "Transcrevendo..."
+        elif "Refinando" in status_text:
+            short = "Refinando com IA..."
+        elif "Ouvindo" in status_text or "Gravando" in status_text:
+            short = "Ouvindo..."
+        self._run_js(f"window.setAudioStatus({json.dumps(short, ensure_ascii=False)}, null);")
+
+    @QtCore.Slot(float)
+    def update_audio_level(self, rms: float):
+        if self.current_mode == "audio":
+            self._run_js(f"window.updateOrbSpectrum({{'rms': {rms:.4f}}});")
+
+    @QtCore.Slot(dict)
+    def update_audio_spectrum(self, spec: dict):
+        if self.current_mode == "audio" and spec:
+            self._run_js(f"window.updateOrbSpectrum({json.dumps(spec)});")
+
+    def _reset_audio_ui(self):
+        self.is_busy_processing = False
+        self.record_timer.stop()
+        self._run_js("window.setOrbState(false, false);")
+        self._run_js("window.setAudioStatus('Pronto para ouvir', '0:00');")
+
+    # ─── DRAG & DROP AUDIO FILES ─────────────────────────────────────────────
+
+    def dragEnterEvent(self, event: QtGui.QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                local_path = url.toLocalFile()
+                if local_path and local_path.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
+                    event.acceptProposedAction()
+                    self._run_js("document.getElementById('dropOverlay').classList.add('active');")
+                    return
+        super().dragEnterEvent(event)
+
+    def dragLeaveEvent(self, event: QtGui.QDragLeaveEvent):
+        self._run_js("document.getElementById('dropOverlay').classList.remove('active');")
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QtGui.QDropEvent):
+        self._run_js("document.getElementById('dropOverlay').classList.remove('active');")
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                local_path = url.toLocalFile()
+                if local_path and local_path.lower().endswith(SUPPORTED_AUDIO_EXTENSIONS):
+                    event.acceptProposedAction()
+                    if hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording:
+                        self.record_timer.stop()
+                        self.app.audio_transcriber.cancel_recording()
+                    self._begin_audio_processing(local_path, delete_after=False)
+                    return
+        super().dropEvent(event)
+
+    # ─── TEXT MODE & WORKING ORB STATE ───────────────────────────────────────
+
+    def enter_working_state(self, title="Corrigindo com IA..."):
+        self.is_working_text = True
+        self.is_busy_processing = True
+        self._resize_for_mode("working")
+        self._run_js("window.setViewMode('working');")
+        self._run_js("window.setOrbState(false, true);")
+        self._run_js(f"window.setAudioStatus({json.dumps(title, ensure_ascii=False)}, '');")
+        QtCore.QTimer.singleShot(90000, self._working_timeout)
+
+    def _working_timeout(self):
+        if getattr(self, "is_working_text", False) and self.isVisible():
+            self.is_busy_processing = False
+            self.is_working_text = False
+            self.hide()
+
+    def _run_text_option(self, option_key, custom_text=None):
+        opts = self.app.options or {}
+        in_window = bool(opts.get(option_key, {}).get("open_in_window", False))
+        if custom_text is not None:
+            self.app.process_option(option_key, custom_text)
+        else:
+            self.app.process_option(option_key)
+        if in_window:
+            self.hide()
+        else:
+            label = "Corrigindo com IA..." if option_key in ("Corrigir PT-BR", "Proofread") else f"{option_key}..."
+            self.enter_working_state(label)
+
+    def on_quick_pt_br(self):
+        if getattr(self, "is_working_text", False):
+            return
+        option_key = "Corrigir PT-BR" if "Corrigir PT-BR" in (self.app.options or {}) else "Proofread"
+        self._run_text_option(option_key)
+
+    def on_generic_instruction(self, instruction):
+        if not getattr(self, "is_working_text", False):
+            self._run_text_option(instruction)
+
+    # ─── OPTIONS JSON HELPERS & QUICK BUTTON MANAGER ─────────────────────────
 
     @staticmethod
     def load_options():
-        options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
+        options_path = os.path.join(os.path.dirname(sys.argv[0]), "options.json")
         if os.path.exists(options_path):
-            with open(options_path, 'r') as f:
-                data = json.load(f)
-                logging.debug('Options loaded successfully')
-        else:
-            logging.debug('Options file not found')
-
-        return data
+            with open(options_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return json.loads(DEFAULT_OPTIONS_JSON)
 
     @staticmethod
     def save_options(options):
-        options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
-        with open(options_path, 'w') as f:
-            json.dump(options, f, indent=2)
+        options_path = os.path.join(os.path.dirname(sys.argv[0]), "options.json")
+        with open(options_path, "w", encoding="utf-8") as f:
+            json.dump(options, f, indent=2, ensure_ascii=False)
 
-    def build_buttons_list(self):
-        """
-        Reads options.json, creates DraggableButton for each (except "Custom"),
-        storing them in self.button_widgets in the same order as the JSON file.
-        """
-        self.button_widgets.clear()
-        data = self.load_options()
-
-        for k,v in data.items():
-            if k=="Custom":
-                continue
-            b = DraggableButton(self, k, k)
-            icon_path = os.path.join(os.path.dirname(sys.argv[0]),
-                                    v["icon"] + ('_dark' if colorMode=='dark' else '_light') + '.png')
-            if os.path.exists(icon_path):
-                b.setIcon(QtGui.QIcon(icon_path))
-
-            # Tooltip surfaces the direct hotkey (if any) for discoverability.
-            # Buttons without a hotkey get no tooltip — keeps things uncluttered.
-            hotkey = (v.get("hotkey") or "").strip()
-            if hotkey:
-                b.setToolTip(f"Direct hotkey: {hotkey}")
-
-            if not self.edit_mode:
-                b.clicked.connect(partial(self.on_generic_instruction, k))
-            self.button_widgets.append(b)
-
-    def rebuild_grid_layout(self, parent_layout=None):
-        """Rebuild grid layout with consistent sizing and proper Add New button placement."""
-        if not parent_layout:
-            parent_layout = self.background.layout()
-
-        # Remove existing grid and Add New button
-        for i in reversed(range(parent_layout.count())):
-            item = parent_layout.itemAt(i)
-            if isinstance(item, QtWidgets.QGridLayout):
-                grid = item
-                for j in reversed(range(grid.count())):
-                    w = grid.itemAt(j).widget()
-                    if w:
-                        grid.removeWidget(w)
-                parent_layout.removeItem(grid)
-            elif (item.widget() and isinstance(item.widget(), QPushButton) 
-                and item.widget().text() == "+ Add New"):
-                item.widget().deleteLater()
-
-        # Create new grid with fixed column width
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(10)  
-        grid.setColumnMinimumWidth(0, 120)
-        grid.setColumnMinimumWidth(1, 120)
-        
-        # Add buttons to grid
-        row = 0
-        col = 0
-        for b in self.button_widgets:
-            grid.addWidget(b, row, col)
-            col += 1
-            if col > 1:
-                col = 0
-                row += 1
-        
-        parent_layout.addLayout(grid)
-        
-        # Add New button (only in edit mode)
-        if self.edit_mode:
-            add_btn = QPushButton("+ Add New")
-            add_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {'#333' if colorMode=='dark' else '#e0e0e0'};
-                    border: 1px solid {'#666' if colorMode=='dark' else '#ccc'};
-                    border-radius: 8px;
-                    padding: 10px;
-                    font-size: 14px;
-                    text-align: center;
-                    color: {'#fff' if colorMode=='dark' else '#000'};
-                    margin-top: 10px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#444' if colorMode=='dark' else '#d0d0d0'};
-                }}
-            """)
-            add_btn.clicked.connect(self.add_new_button_clicked)
-            parent_layout.addWidget(add_btn)
-
-    def add_edit_delete_icons(self, btn):
-        """Add edit/delete icons as overlays with proper spacing."""
-        if hasattr(btn, 'icon_container') and btn.icon_container:
-            btn.icon_container.deleteLater()
-        
-        btn.icon_container = QtWidgets.QWidget(btn)
-        btn.icon_container.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, False)
-        
-        btn.icon_container.setGeometry(0, 0, btn.width(), btn.height())
-        
-        circle_style = f"""
-            QPushButton {{
-                background-color: {'#666' if colorMode=='dark' else '#999'};
+    def _open_quick_button_manager(self):
+        """Allow adding a custom button or restoring defaults via a clean menu."""
+        self.edit_mode = True
+        menu = QtWidgets.QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #1c1c1e;
+                color: #f5f5f7;
+                border: 1px solid rgba(255,255,255,0.16);
                 border-radius: 10px;
-                min-width: 16px;
-                min-height: 16px;
-                max-width: 16px;
-                max-height: 16px;
-                padding: 1px;
-                margin: 0px;
-            }}
-            QPushButton:hover {{
-                background-color: {'#888' if colorMode=='dark' else '#bbb'};
-            }}
-        """
-        
-        # Create edit icon (top-left)
-        edit_btn = QPushButton(btn.icon_container)
-        edit_btn.setGeometry(3, 3, 16, 16)
-        pencil_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                        'icons', 'pencil' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(pencil_icon):
-            edit_btn.setIcon(QtGui.QIcon(pencil_icon))
-        edit_btn.setStyleSheet(circle_style)
-        edit_btn.clicked.connect(partial(self.edit_button_clicked, btn))
-        edit_btn.show()
-        
-        # Create delete icon (top-right)
-        delete_btn = QPushButton(btn.icon_container)
-        delete_btn.setGeometry(btn.width() - 23, 3, 16, 16)
-        del_icon = os.path.join(os.path.dirname(sys.argv[0]),
-                                'icons', 'cross' + ('_dark' if colorMode=='dark' else '_light') + '.png')
-        if os.path.exists(del_icon):
-            delete_btn.setIcon(QtGui.QIcon(del_icon))
-        delete_btn.setStyleSheet(circle_style)
-        delete_btn.clicked.connect(partial(self.delete_button_clicked, btn))
-        delete_btn.show()
-        
-        btn.icon_container.raise_()
-        btn.icon_container.show()
-
-    def toggle_edit_mode(self):
-        """Toggle edit mode with improved button labels and state handling."""
-        self.edit_mode = not self.edit_mode
-        logging.debug(f'Edit mode toggled: {self.edit_mode}')
-
-        if self.edit_mode:
-            # Switch to edit mode:
-            icon_name = "check"
-            # No text, just the check icon, a bit bigger:
-            self.edit_button.setText("")
-            self.edit_button.setFixedSize(36, 36)
-            self.edit_button.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: transparent;
-                    border: none;
-                    border-radius: 6px;
-                    padding: 0px;
-                }}
-                QPushButton:hover {{
-                    background-color: {'#333' if colorMode=='dark' else '#ebebeb'};
-                }}
-            """)
-            # Hide close, show reset button & drag label
-            self.close_button.hide()
-            self.reset_button.show()
-            self.drag_label.show()
-
-        else:
-            # Switch back to normal (non-edit) mode:
-            icon_name = "pencil"
-            self.edit_button.setText("")
-            self.edit_button.setFixedSize(24, 24)  # Return to normal size
-            # Show close, hide reset & drag label
-            self.close_button.show()
-            self.reset_button.hide()
-            self.drag_label.hide()
-
-            # Inform the user that the app will close to apply changes
-            msg = QtWidgets.QMessageBox()
-            msg.setWindowTitle("Quitting to apply changes...")
-            msg.setText("Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes.")
-            msg.setStandardButtons(QtWidgets.QMessageBox.Ok)
-            msg.exec_()
-
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 14px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background-color: #0a84ff;
+                color: #ffffff;
+            }
+        """)
+        add_act = menu.addAction("+ Adicionar Novo Botão...")
+        reset_act = menu.addAction("↺ Restaurar Botões Padrão")
+        chosen = menu.exec(QtGui.QCursor.pos())
+        if chosen == add_act:
+            dialog = ButtonEditDialog(self, title="Adicionar Botão")
+            if dialog.exec_():
+                bd = dialog.get_button_data()
+                if bd.get("name"):
+                    data = self.load_options()
+                    data[bd["name"]] = {
+                        "prefix": bd["prefix"],
+                        "instruction": bd["instruction"],
+                        "icon": bd["icon"],
+                        "open_in_window": bd["open_in_window"],
+                    }
+                    if bd.get("hotkey"):
+                        data[bd["name"]]["hotkey"] = bd["hotkey"]
+                    self.save_options(data)
+                    self.app.load_options()
+                    self.app.register_hotkey()
+                    self._sync_full_ui_to_js()
+                    self._resize_for_mode(self.current_mode)
+        elif chosen == reset_act:
+            default_data = json.loads(DEFAULT_OPTIONS_JSON)
+            self.save_options(default_data)
             self.app.load_options()
-            self.close()
-            # Instead of restarting, simply exit the app:
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
-            return
+            self.app.register_hotkey()
+            self._sync_full_ui_to_js()
+            self._resize_for_mode(self.current_mode)
+        self.edit_mode = False
 
+    def open_settings_from_popup(self):
+        self.close_popup()
+        if hasattr(self.app, "show_settings"):
+            self.app.show_settings()
 
-        # Update the edit button icon now that icon_name is defined
-        icon_path = os.path.join(
-            os.path.dirname(sys.argv[0]),
-            'icons',
-            f"{icon_name}_{'dark' if colorMode=='dark' else 'light'}.png"
-        )
-        if os.path.exists(icon_path):
-            self.edit_button.setIcon(QtGui.QIcon(icon_path))
-
-        # Toggle the main input area
-        self.input_area.setVisible(not self.edit_mode)
-
-        # Update button overlays
-        for btn in self.button_widgets:
-            try:
-                btn.clicked.disconnect()
-            except:
-                pass
-
-            if not self.edit_mode:
-                btn.clicked.connect(partial(self.on_generic_instruction, btn.key))
-                if hasattr(btn, 'icon_container') and btn.icon_container:
-                    btn.icon_container.deleteLater()
-                    btn.icon_container = None
-            else:
-                self.add_edit_delete_icons(btn)
-
-            btn.setStyleSheet(btn.base_style)
-
-        # Rebuild grid layout
-        self.rebuild_grid_layout()
-
-
-    def on_reset_clicked(self):
-        """
-        Reset `options.json` to the DEFAULT_OPTIONS_JSON, then show message & restart.
-        """
-        confirm_box = QtWidgets.QMessageBox()
-        confirm_box.setWindowTitle("Confirm Reset to Defaults & Quit?")
-        confirm_box.setText("To reset the buttons to their original configuration, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
-        confirm_box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        confirm_box.setDefaultButton(QtWidgets.QMessageBox.No)
-        
-        if confirm_box.exec_() == QtWidgets.QMessageBox.Yes:
-            try:
-                logging.debug('Resetting to default options.json')
-                default_data = json.loads(DEFAULT_OPTIONS_JSON)
-                self.save_options(default_data)
-
-                # Save and quit
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
-            
-            except Exception as e:
-                logging.error(f"Error resetting options.json: {e}")
-                error_msg = QtWidgets.QMessageBox()
-                error_msg.setWindowTitle("Error")
-                error_msg.setText(f"An error occurred while resetting: {str(e)}")
-                error_msg.exec_()
-
-    def _validate_hotkey(self, hotkey, exclude_button=None):
-        """
-        Check a button hotkey string for validity and conflicts.
-
-        Returns (ok, error_message). Empty hotkey is always ok — the dialog
-        omits the field on save, which means "no direct hotkey for this
-        button". This is also how every legacy/old options.json entry
-        looks, so absence is always safe.
-
-        `exclude_button` skips the named button when checking conflicts —
-        used during edit so a button doesn't conflict with its own
-        previously-saved hotkey.
-        """
-        if not hotkey:
-            return True, None
-
-        # Authoritative format check: try parsing it the same way the
-        # listener will. Catches typos, unknown key names, missing
-        # modifiers, etc. without us having to maintain a regex.
-        try:
-            pykeyboard.HotKey.parse(self.app._to_pynput_hotkey(hotkey))
-        except Exception as e:
-            return False, (
-                f"'{hotkey}' isn't a valid hotkey.\n\n"
-                f"Use '+' between keys, e.g. ctrl+j or ctrl+shift+p.\n"
-                f"({e})"
-            )
-
-        # Conflict with the global Writing Tools shortcut. Same combination
-        # can't dispatch to both the popup and a direct fire.
-        global_shortcut = (self.app.config.get('shortcut') or 'ctrl+space').strip().lower()
-        if hotkey == global_shortcut:
-            return False, (
-                f"'{hotkey}' is already used as the main Writing Tools "
-                f"hotkey (set in Settings). Pick a different combination."
-            )
-
-        # Conflict with another button's hotkey.
-        data = self.load_options()
-        for k, v in data.items():
-            if k == exclude_button:
-                continue
-            other = (v.get('hotkey') or '').strip().lower()
-            if other and other == hotkey:
-                return False, (
-                    f"'{hotkey}' is already used by the '{k}' button. "
-                    f"Pick a different combination."
-                )
-
-        return True, None
-
-    @staticmethod
-    def _build_button_entry(bd, existing=None):
-        """
-        Assemble the options.json entry for a button from dialog output.
-        Preserves any non-dialog fields already on the existing entry, and
-        only writes `hotkey` when the user provided one (legacy-clean).
-        """
-        entry = dict(existing) if existing else {}
-        entry["prefix"] = bd["prefix"]
-        entry["instruction"] = bd["instruction"]
-        entry["icon"] = bd["icon"]
-        entry["open_in_window"] = bd["open_in_window"]
-        if bd.get("hotkey"):
-            entry["hotkey"] = bd["hotkey"]
-        else:
-            # User cleared the hotkey field — drop the key so re-saving
-            # doesn't leave a stale binding behind.
-            entry.pop("hotkey", None)
-        return entry
-
-    def add_new_button_clicked(self):
-        dialog = ButtonEditDialog(self, title="Add New Button")
-        while dialog.exec_():
-            bd = dialog.get_button_data()
-            ok, err = self._validate_hotkey(bd.get("hotkey", ""))
-            if not ok:
-                QtWidgets.QMessageBox.warning(self, "Invalid hotkey", err)
-                # Re-open the dialog with the user's entries preserved so
-                # they can fix the hotkey instead of starting over.
-                continue
-            data = self.load_options()
-            data[bd["name"]] = self._build_button_entry(bd)
-            self.save_options(data)
-
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply button...",
-                "Writing Tools needs to relaunch to apply your fancy button & will now quit.\nPlease relaunch Writing Tools.exe to see your new button."
-            )
-
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
-            return
-
-
-    def edit_button_clicked(self, btn):
-        """User clicked the small pencil icon over a button."""
-        key = btn.key
-        data = self.load_options()
-        bd = data[key]
-        bd["name"] = key
-
-        dialog = ButtonEditDialog(self, bd)
-        while dialog.exec_():
-            new_data = dialog.get_button_data()
-            # Pass `exclude_button=key` so we don't flag the button's own
-            # current hotkey as a conflict with itself.
-            ok, err = self._validate_hotkey(new_data.get("hotkey", ""), exclude_button=key)
-            if not ok:
-                QtWidgets.QMessageBox.warning(self, "Invalid hotkey", err)
-                continue
-            data = self.load_options()
-            existing = data.get(key)
-            if new_data["name"] != key:
-                del data[key]
-            data[new_data["name"]] = self._build_button_entry(new_data, existing=existing)
-            self.save_options(data)
-
-            self.build_buttons_list()
-            self.rebuild_grid_layout()
-
-            self.hide()
-
-            # Show message about relaunch requirement
-            QtWidgets.QMessageBox.information(
-                self,
-                "Quitting to apply changes to this button...",
-                "Writing Tools needs to relaunch to apply your changes & will now quit.\nPlease relaunch Writing Tools.exe to see your changes."
-            )
-
-            # Save and quit
-            self.app.load_options()
-            self.close()
-            QtCore.QTimer.singleShot(100, self.app.exit_app)
-            return
-
-    def delete_button_clicked(self, btn):
-        """Handle deletion of a button."""
-        key = btn.key
-        confirm = QtWidgets.QMessageBox()
-        confirm.setWindowTitle("Confirm Delete & Quit?")
-        confirm.setText(f"To delete the '{key}' button, Writing Tools would need to quit, so you'd need to relaunch Writing Tools.exe.\nAre you sure you want to continue?")
-        confirm.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-        confirm.setDefaultButton(QtWidgets.QMessageBox.No)
-        
-        if confirm.exec_() == QtWidgets.QMessageBox.Yes:
-            try:
-                data = self.load_options()
-                del data[key]
-                self.save_options(data)
-
-                # Clean up UI elements
-                for btn_ in self.button_widgets[:]:
-                    if btn_.key == key:
-                        if hasattr(btn_, 'icon_container') and btn_.icon_container:
-                            btn_.icon_container.deleteLater()
-                        btn_.deleteLater()
-                        self.button_widgets.remove(btn_)
-                
-                self.app.load_options()
-                self.close()
-                QtCore.QTimer.singleShot(100, self.app.exit_app)
-                
-            except Exception as e:
-                logging.error(f"Error deleting button: {e}")
-                error_msg = QtWidgets.QMessageBox()
-                error_msg.setWindowTitle("Error")
-                error_msg.setText(f"An error occurred while deleting the button: {str(e)}")
-                error_msg.exec_()
-
-    def update_json_from_grid(self):
-        """
-        Called after a drop reorder. Reflect the new order in options.json,
-        so that user's custom arrangement persists.
-        """
-        data = self.load_options()
-        new_data = {"Custom": data["Custom"]} if "Custom" in data else {}
-        for b in self.button_widgets:
-            new_data[b.key] = data[b.key]
-        self.save_options(new_data)
-
-    def on_custom_change(self):
-        txt = self.custom_input.text().strip()
-        if txt:
-            self.app.process_option('Custom', txt)
-            self.close()
-
-    def on_generic_instruction(self, instruction):
-        if not self.edit_mode:
-            self.app.process_option(instruction)
-            self.close()
+    def close_popup(self):
+        """Cancel any active recording and hide the pre-warmed window."""
+        if hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording:
+            self.record_timer.stop()
+            self.app.audio_transcriber.cancel_recording()
+        self.is_busy_processing = False
+        self.is_working_text = False
+        self.hide()
 
     def eventFilter(self, obj, event):
-        # Hide on deactivate only if NOT in edit mode
-        if event.type()==QtCore.QEvent.WindowDeactivate:
-            if not self.edit_mode:
+        if event.type() == QtCore.QEvent.Type.WindowDeactivate:
+            is_recording = hasattr(self.app, "audio_transcriber") and self.app.audio_transcriber.is_recording
+            if not self.edit_mode and not is_recording and not self.is_busy_processing:
                 self.hide()
                 return True
         return super().eventFilter(obj, event)
 
     def keyPressEvent(self, event):
-        if event.key()==QtCore.Qt.Key_Escape:
-            self.close()
+        if event.key() == QtCore.Qt.Key.Key_Escape:
+            self.close_popup()
+        elif event.key() in (QtCore.Qt.Key.Key_Space, QtCore.Qt.Key.Key_Return, QtCore.Qt.Key.Key_Enter) and self.current_mode == "audio":
+            if not event.isAutoRepeat() and time.time() >= self._space_grace_until:
+                self.toggle_microphone_recording()
         else:
             super().keyPressEvent(event)

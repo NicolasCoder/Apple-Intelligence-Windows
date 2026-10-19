@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Apple Intelligence</title>
+<style>
+  :root {
+    --font-apple: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+    --shell-bg: rgba(18, 18, 24, 0.86);
+    --card-bg: rgba(255, 255, 255, 0.06);
+    --card-hover: rgba(255, 255, 255, 0.11);
+    --card-active: rgba(255, 255, 255, 0.15);
+    --border-subtle: rgba(255, 255, 255, 0.11);
+    --border-bright: rgba(255, 255, 255, 0.22);
+    --text-primary: rgba(245, 245, 247, 0.96);
+    --text-secondary: rgba(235, 235, 245, 0.56);
+    --text-muted: rgba(235, 235, 245, 0.36);
+    --accent-blue: #0a84ff;
+  }
+
+  body.light {
+    --shell-bg: rgba(246, 246, 250, 0.90);
+    --card-bg: rgba(0, 0, 0, 0.045);
+    --card-hover: rgba(0, 0, 0, 0.085);
+    --card-active: rgba(0, 0, 0, 0.12);
+    --border-subtle: rgba(0, 0, 0, 0.09);
+    --border-bright: rgba(255, 255, 255, 0.85);
+    --text-primary: rgba(29, 29, 31, 0.95);
+    --text-secondary: rgba(60, 60, 67, 0.62);
+    --text-muted: rgba(60, 60, 67, 0.42);
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    overflow: hidden;
+    font-family: var(--font-apple);
+    color: var(--text-primary);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Apple macOS Sequoia Glass Capsule */
+  .apple-shell {
+    position: relative;
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
+    margin: 2px;
+    border-radius: 24px;
+    background: var(--shell-bg);
+    backdrop-filter: blur(36px) saturate(195%);
+    -webkit-backdrop-filter: blur(36px) saturate(195%);
+    border: 1px solid var(--border-subtle);
+    box-shadow:
+      inset 0 1px 0 0 var(--border-bright),
+      inset 0 0 24px rgba(168, 130, 255, 0.04),
+      0 12px 32px rgba(0, 0, 0, 0.38);
+    display: flex;
+    flex-direction: column;
+    padding: 10px 12px 12px 12px;
+    overflow: hidden;
+    animation: shellAppear 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  /* Iridescent Apple Intelligence Rim Accent */
+  .apple-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 24px;
+    padding: 1px;
+    background: linear-gradient(
+      135deg,
+      rgba(168, 130, 255, 0.42),
+      rgba(94, 175, 255, 0.22) 38%,
+      rgba(255, 110, 180, 0.28) 72%,
+      rgba(255, 165, 100, 0.35)
+    );
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  @keyframes shellAppear {
+    from { opacity: 0; transform: scale(0.95) translateY(4px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+
+  /* Soft Ambient Mesh Glow inside Glass */
+  .ambient-mesh {
+    position: absolute;
+    inset: -25%;
+    pointer-events: none;
+    z-index: 0;
+    background:
+      radial-gradient(circle at 18% 12%, rgba(138, 92, 246, 0.15), transparent 46%),
+      radial-gradient(circle at 84% 88%, rgba(255, 105, 180, 0.12), transparent 46%),
+      radial-gradient(circle at 50% 45%, rgba(10, 132, 255, 0.07), transparent 55%);
+  }
+
+  /* ─── Minimalist Top Header Bar ─── */
+  .top-bar {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 24px;
+    flex-shrink: 0;
+    cursor: grab;
+  }
+
+  .top-left, .top-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .icon-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .icon-btn svg {
+    width: 12px;
+    height: 12px;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .icon-btn:hover {
+    background: var(--card-hover);
+    color: var(--text-primary);
+    transform: scale(1.07);
+  }
+
+  .icon-btn:active {
+    transform: scale(0.93);
+  }
+
+  /* Segmented Mode Switcher Pill */
+  .mode-pill {
+    display: flex;
+    align-items: center;
+    background: var(--card-bg);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    padding: 2px;
+    gap: 1px;
+  }
+
+  .mode-tab {
+    border: none;
+    background: transparent;
+    color: var(--text-secondary);
+    font-family: var(--font-apple);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2.5px 10px;
+    border-radius: 999px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .mode-tab svg {
+    width: 10px;
+    height: 10px;
+  }
+
+  .mode-tab.active {
+    background: rgba(255, 255, 255, 0.14);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+  }
+
+  body.light .mode-tab.active {
+    background: #ffffff;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  }
+
+  /* ─── Views ─── */
+  .view-container {
+    position: relative;
+    z-index: 4;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+  }
+
+  .view {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    animation: viewFade 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .view.active {
+    display: flex;
+  }
+
+  @keyframes viewFade {
+    from { opacity: 0; transform: scale(0.98); }
+    to { opacity: 1; transform: scale(1); }
+  }
+
+  /* ─── AUDIO VIEW (PURE APPLE INTELLIGENCE MINIMALISM) ─── */
+  .orb-stage {
+    position: relative;
+    width: 122px;
+    height: 122px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin: 0 auto 2px auto;
+  }
+
+  .orb-aura {
+    position: absolute;
+    width: 96px;
+    height: 96px;
+    border-radius: 50%;
+    filter: blur(20px);
+    opacity: 0.48;
+    pointer-events: none;
+    background: radial-gradient(circle, rgba(168, 130, 255, 0.7), rgba(94, 175, 255, 0.2), transparent 72%);
+    transition: transform 0.06s linear;
+  }
+
+  canvas#orbCanvas {
+    position: relative;
+    z-index: 2;
+    width: 118px;
+    height: 118px;
+  }
+
+  .status-line {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--text-primary);
+    text-align: center;
+    margin-bottom: 6px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 95%;
+  }
+
+  /* Ultra-Minimalist Action Pill (Replaces the bulky button) */
+  .minimal-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 25px;
+    padding: 0 11px;
+    border-radius: 999px;
+    border: 1px solid var(--border-subtle);
+    background: var(--card-bg);
+    color: var(--text-secondary);
+    font-family: var(--font-apple);
+    font-size: 11px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .minimal-pill:hover {
+    background: var(--card-hover);
+    color: var(--text-primary);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .minimal-pill:active {
+    transform: scale(0.96);
+  }
+
+  .rec-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #ff453a;
+    box-shadow: 0 0 7px #ff453a;
+    animation: pulseRec 1.25s infinite ease-in-out;
+  }
+
+  .rec-dot.idle {
+    background: #0a84ff;
+    box-shadow: none;
+    animation: none;
+  }
+
+  .rec-dot.working {
+    background: #a882ff;
+    box-shadow: 0 0 7px #a882ff;
+  }
+
+  @keyframes pulseRec {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.38; transform: scale(0.8); }
+  }
+
+  .timer-badge {
+    font-variant-numeric: tabular-nums;
+    font-size: 10.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+    opacity: 0.78;
+    padding-left: 2px;
+  }
+
+  /* Discrete Microphone Popover */
+  .mic-popover {
+    display: none;
+    position: absolute;
+    top: 36px;
+    left: 10px;
+    right: 10px;
+    z-index: 50;
+    background: rgba(24, 24, 32, 0.96);
+    backdrop-filter: blur(28px);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 5px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    max-height: 155px;
+    overflow-y: auto;
+  }
+
+  body.light .mic-popover {
+    background: rgba(250, 250, 252, 0.96);
+  }
+
+  .mic-popover.open {
+    display: block;
+    animation: viewFade 0.14s ease-out;
+  }
+
+  .mic-popover-title {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted);
+    padding: 3px 8px 4px 8px;
+  }
+
+  .mic-item {
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-apple);
+    font-size: 11.5px;
+    padding: 5.5px 8px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .mic-item:hover {
+    background: var(--card-hover);
+  }
+
+  .mic-item.selected {
+    background: rgba(10, 132, 255, 0.22);
+    color: #64d2ff;
+    font-weight: 600;
+  }
+
+  body.light .mic-item.selected {
+    color: #0066cc;
+  }
+
+  /* ─── TEXT VIEW (MINIMALIST APPLE WRITING TOOLS) ─── */
+  .text-panel {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 4px;
+  }
+
+  .input-pill {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 32px;
+    background: rgba(0, 0, 0, 0.22);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 0 4px 0 10px;
+    transition: border-color 0.15s ease;
+  }
+
+  body.light .input-pill {
+    background: rgba(255, 255, 255, 0.72);
+  }
+
+  .input-pill:focus-within {
+    border-color: rgba(10, 132, 255, 0.65);
+  }
+
+  .input-pill input {
+    flex: 1;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--text-primary);
+    font-family: var(--font-apple);
+    font-size: 12px;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .input-pill input::placeholder {
+    color: var(--text-muted);
+  }
+
+  .send-circle {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: none;
+    background: linear-gradient(135deg, #0a84ff, #5e5ce6);
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.14s ease;
+  }
+
+  .send-circle svg {
+    width: 11px;
+    height: 11px;
+    stroke: #fff;
+    fill: none;
+    stroke-width: 2.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .send-circle:hover {
+    transform: scale(1.07);
+  }
+
+  .primary-pt-btn {
+    width: 100%;
+    height: 32px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    background: linear-gradient(90deg, rgba(10, 132, 255, 0.80), rgba(94, 92, 230, 0.80), rgba(191, 90, 242, 0.80));
+    color: #ffffff;
+    font-family: var(--font-apple);
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 11px;
+    cursor: pointer;
+    transition: all 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .primary-pt-btn:hover {
+    filter: brightness(1.09);
+    transform: translateY(-0.5px);
+  }
+
+  .primary-pt-btn:active {
+    transform: scale(0.985);
+  }
+
+  .primary-left {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .enter-hint {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+    font-weight: 600;
+  }
+
+  .options-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 5px;
+    width: 100%;
+  }
+
+  .opt-btn {
+    height: 30px;
+    border-radius: 9px;
+    border: 1px solid var(--border-subtle);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font-family: var(--font-apple);
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 0 9px;
+    text-align: left;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+
+  .opt-btn:hover {
+    background: var(--card-hover);
+    border-color: rgba(255, 255, 255, 0.2);
+    transform: translateY(-0.5px);
+  }
+
+  .opt-btn:active {
+    transform: scale(0.97);
+  }
+
+  .opt-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+    flex-shrink: 0;
+  }
+
+  /* Drop Overlay */
+  .drop-overlay {
+    display: none;
+    position: absolute;
+    inset: 4px;
+    border-radius: 20px;
+    background: rgba(10, 132, 255, 0.2);
+    border: 1.5px dashed #0a84ff;
+    z-index: 60;
+    align-items: center;
+    justify-content: center;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: #fff;
+    backdrop-filter: blur(10px);
+  }
+
+  .drop-overlay.active {
+    display: flex;
+  }
+</style>
+</head>
+<body>
+  <div class="apple-shell" id="shell">
+    <div class="ambient-mesh"></div>
+    <div class="drop-overlay" id="dropOverlay">Solte o áudio para transcrever</div>
+
+    <!-- Minimalist Top Bar -->
+    <div class="top-bar" id="topBar">
+      <div class="top-left">
+        <button class="icon-btn" id="closeBtn" title="Fechar (Esc)">
+          <svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="mode-pill" id="modePill">
+        <button class="mode-tab" id="tabText" onclick="userSwitchMode('text')">
+          <svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"/></svg>
+          <span>Texto</span>
+        </button>
+        <button class="mode-tab active" id="tabAudio" onclick="userSwitchMode('audio')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+          <span>Áudio</span>
+        </button>
+      </div>
+
+      <div class="top-right">
+        <!-- Discrete Audio File Picker Icon (only in Audio mode) -->
+        <button class="icon-btn" id="browseAudioBtn" title="Abrir arquivo de áudio (.ogg, .mp3, .wav)" onclick="sendIPC({action:'browse_audio'})">
+          <svg viewBox="0 0 24 24"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+        </button>
+        <!-- Discrete Microphone Selector Icon (only in Audio mode) -->
+        <button class="icon-btn" id="micMenuBtn" title="Trocar Microfone" onclick="toggleMicPopover()">
+          <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4M8 21h8"/></svg>
+        </button>
+        <!-- Edit Buttons Icon (only in Text mode) -->
+        <button class="icon-btn" id="editBtnsBtn" style="display:none;" title="Editar botões" onclick="sendIPC({action:'edit_buttons'})">
+          <svg viewBox="0 0 24 24"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        </button>
+        <!-- Settings Gear Icon -->
+        <button class="icon-btn" id="settingsBtn" title="Configurações" onclick="sendIPC({action:'open_settings'})">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Discrete Microphone Popover -->
+    <div class="mic-popover" id="micPopover">
+      <div class="mic-popover-title">Microfone de Entrada</div>
+      <div id="micList"></div>
+    </div>
+
+    <!-- View Container -->
+    <div class="view-container">
+      <!-- AUDIO / ORB VIEW -->
+      <div class="view active" id="audioView">
+        <div class="orb-stage" onclick="sendIPC({action:'toggle_record'})" title="Espaço ou clique para concluir">
+          <div class="orb-aura" id="orbAura"></div>
+          <canvas id="orbCanvas" width="236" height="236"></canvas>
+        </div>
+
+        <div class="status-line" id="audioStatus">Ouvindo...</div>
+
+        <button class="minimal-pill" id="recordPillBtn" onclick="sendIPC({action:'toggle_record'})">
+          <span class="rec-dot" id="recDot"></span>
+          <span id="recordPillText">Espaço para concluir</span>
+          <span class="timer-badge" id="timerTag">0:00</span>
+        </button>
+      </div>
+
+      <!-- TEXT VIEW -->
+      <div class="view" id="textView">
+        <div class="text-panel">
+          <div class="input-pill">
+            <input type="text" id="customInput" placeholder="Descreva a alteração..." />
+            <button class="send-circle" onclick="submitCustomOrDefault()" title="Enviar">
+              <svg viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+            </button>
+          </div>
+
+          <button class="primary-pt-btn" onclick="sendIPC({action:'run_option', key:'Corrigir PT-BR'})">
+            <span class="primary-left">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2L14.4 9.6L22 12L14.4 14.4L12 22L9.6 14.4L2 12L9.6 9.6L12 2Z"/></svg>
+              <span>Corrigir PT-BR</span>
+            </span>
+            <span class="enter-hint">↵</span>
+          </button>
+
+          <div class="options-grid" id="optionsGrid"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+// ─── IPC BRIDGE TO PYTHON / ELECTRON ─────────────────────────────────────────
+function sendIPC(payload) {
+  console.log('WT_IPC:' + JSON.stringify(payload));
+}
+
+// Allow dragging window from topBar (except buttons)
+document.getElementById('topBar').addEventListener('mousedown', (e) => {
+  if (!e.target.closest('button') && !e.target.closest('.mode-pill')) {
+    sendIPC({ action: 'start_drag' });
+  }
+});
+
+document.getElementById('closeBtn').addEventListener('click', () => {
+  sendIPC({ action: 'close' });
+});
+
+// ─── PITCH-REACTIVE THINKING-ORBS 2D CANVAS ENGINE ───────────────────────────
+const canvas = document.getElementById('orbCanvas');
+const ctx = canvas.getContext('2d');
+const orbAura = document.getElementById('orbAura');
+
+// Palettes for Grave (Bass), Médio (Mid), and Agudo (Treble)
+const PAL_BASS = [
+  [88, 86, 214],    // Deep Indigo
+  [138, 68, 242],   // Royal Violet
+  [215, 50, 120],   // Crimson Magenta
+  [94, 92, 230],    // Apple Indigo
+  [88, 86, 214]
+];
+const PAL_MID = [
+  [168, 130, 255],  // Lavender Purple
+  [94, 175, 255],   // Siri Blue
+  [255, 105, 180],  // Coral Pink
+  [255, 165, 100],  // Warm Peach
+  [168, 130, 255]
+];
+const PAL_TREBLE = [
+  [100, 210, 255],  // Electric Cyan
+  [90, 245, 220],   // Mint Aqua
+  [255, 130, 210],  // Bright Rose
+  [255, 214, 60],   // Solar Gold
+  [100, 210, 255]
+];
+
+function samplePalette(stops, t) {
+  const seg = stops.length - 1;
+  const x = ((t % 1 + 1) % 1) * seg;
+  const k = Math.min(seg - 1, Math.floor(x));
+  let f = x - k;
+  f = f * f * (3 - 2 * f);
+  const a = stops[k], b = stops[k + 1];
+  return [
+    a[0] + (b[0] - a[0]) * f,
+    a[1] + (b[1] - a[1]) * f,
+    a[2] + (b[2] - a[2]) * f
+  ];
+}
+
+function getPitchColor(hue, pitch) {
+  const p = Math.max(0, Math.min(1, pitch));
+  const cBass = samplePalette(PAL_BASS, hue);
+  const cMid = samplePalette(PAL_MID, hue);
+  const cTreb = samplePalette(PAL_TREBLE, hue);
+  if (p < 0.45) {
+    const w = p / 0.45;
+    return [
+      cBass[0] * (1 - w) + cMid[0] * w,
+      cBass[1] * (1 - w) + cMid[1] * w,
+      cBass[2] * (1 - w) + cMid[2] * w
+    ];
+  } else {
+    const w = (p - 0.45) / 0.55;
+    return [
+      cMid[0] * (1 - w) + cTreb[0] * w,
+      cMid[1] * (1 - w) + cTreb[1] * w,
+      cMid[2] * (1 - w) + cTreb[2] * w
+    ];
+  }
+}
+
+// Structured latitude/longitude ring geometry from `thinking-orbs`
+const LAT_RINGS = 15;
+const LON_DENSITY = 38;
+const DOTS = [];
+for (let ri = 0; ri <= LAT_RINGS; ri++) {
+  const lat = -Math.PI / 2 + (ri / LAT_RINGS) * Math.PI;
+  const cosLat = Math.cos(lat);
+  const sinLat = Math.sin(lat);
+  const lonCount = Math.max(1, Math.round(Math.abs(cosLat) * LON_DENSITY));
+  for (let lj = 0; lj < lonCount; lj++) {
+    const lon = (lj / lonCount) * 2 * Math.PI;
+    DOTS.push({
+      x: cosLat * Math.cos(lon),
+      y: sinLat,
+      z: cosLat * Math.sin(lon),
+      lat,
+      lon,
+      ringU: ri / LAT_RINGS,
+      hue: (lon / (2 * Math.PI)) % 1
+    });
+  }
+}
+
+let orbState = {
+  mode: 'listening',
+  rms: 0, rmsT: 0,
+  bass: 0, bassT: 0,
+  mid: 0, midT: 0,
+  treble: 0, trebleT: 0,
+  pitch: 0.38, pitchT: 0.38,
+  bands: [0,0,0,0,0,0,0,0],
+  bandsT: [0,0,0,0,0,0,0,0],
+  angle: 0,
+  wavePhase: 0,
+  scan: 0, scanT: 0,
+  clock: 0,
+  lastTs: performance.now()
+};
+
+function renderOrb(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - orbState.lastTs) / 1000));
+  orbState.lastTs = now;
+  orbState.clock += dt;
+
+  const kFast = 1 - Math.exp(-dt * 18);
+  const kSlow = 1 - Math.exp(-dt * 6);
+  const kPitch = 1 - Math.exp(-dt * 10);
+
+  orbState.rms += (orbState.rmsT - orbState.rms) * kFast;
+  orbState.bass += (orbState.bassT - orbState.bass) * kFast;
+  orbState.mid += (orbState.midT - orbState.mid) * kFast;
+  orbState.treble += (orbState.trebleT - orbState.treble) * kFast;
+  orbState.pitch += (orbState.pitchT - orbState.pitch) * kPitch;
+  orbState.scan += (orbState.scanT - orbState.scan) * kSlow;
+  for (let i = 0; i < 8; i++) {
+    orbState.bands[i] += (orbState.bandsT[i] - orbState.bands[i]) * kFast;
+    orbState.bandsT[i] *= Math.exp(-dt * 5.5);
+  }
+
+  const decay = Math.exp(-dt * 5.5);
+  orbState.rmsT *= decay;
+  orbState.bassT *= decay;
+  orbState.midT *= decay;
+  orbState.trebleT *= decay;
+
+  const baseSpin = orbState.mode === 'working' ? 1.38 : (orbState.mode === 'listening' ? 0.42 : 0.28);
+  const pitchSpeed = 0.65 + 1.35 * orbState.pitch;
+  orbState.angle += baseSpin * (1 + 0.65 * orbState.rms * pitchSpeed) * dt;
+  orbState.wavePhase += dt * (2.2 + 8.5 * orbState.pitch + 3.6 * orbState.rms);
+
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+
+  const cx = W / 2;
+  const cy = H / 2;
+  const t = orbState.clock;
+
+  // Weights for Grave (low pitch), Médio (mid pitch), Agudo (high pitch)
+  const p = Math.max(0, Math.min(1, orbState.pitch));
+  const wGrave = Math.max(0, 1 - p * 2.2) * orbState.rms + orbState.bass * 0.65;
+  const wMid = Math.max(0, 1 - Math.abs(p - 0.48) * 2.8) * orbState.rms + orbState.mid * 0.5;
+  const wAgudo = Math.max(0, (p - 0.45) * 1.85) * orbState.rms + orbState.treble * 0.75;
+
+  // Grave swells the whole sphere wide & deep; Agudo tightens core and shoots crisp outer spikes
+  const breath = 1 + 0.028 * Math.sin(t * 1.7) + 0.19 * Math.min(1.2, wGrave) - 0.04 * Math.min(1, wAgudo);
+  const R = (W / 2) * 0.73 * breath;
+
+  const auraCol = getPitchColor((t * 0.08) % 1, orbState.pitch);
+  const auraScale = 1 + 0.38 * orbState.rms + 0.28 * orbState.bass;
+  orbAura.style.transform = `scale(${auraScale.toFixed(3)})`;
+  orbAura.style.background = `radial-gradient(circle, rgba(${auraCol[0]|0},${auraCol[1]|0},${auraCol[2]|0},0.68), rgba(${auraCol[0]|0},${auraCol[1]|0},${auraCol[2]|0},0.18), transparent 72%)`;
+
+  const ca = Math.cos(orbState.angle);
+  const sa = Math.sin(orbState.angle);
+  const tilt = 0.38 + 0.08 * Math.sin(t * 0.5) + 0.22 * (orbState.pitch - 0.38) * Math.min(1, orbState.rms * 1.5);
+  const ct = Math.cos(tilt);
+  const st = Math.sin(tilt);
+  const wp = orbState.wavePhase;
+  // Grave makes dots thick and heavy; Agudo makes dots crisp and fine
+  const baseR = Math.max(1.75, R * 0.042) * (1 + 0.32 * Math.min(1, wGrave) - 0.12 * Math.min(1, wAgudo));
+
+  const projected = [];
+  for (let i = 0; i < DOTS.length; i++) {
+    const d = DOTS[i];
+    const bPos = d.ringU * 7;
+    const bIdx = Math.min(6, Math.floor(bPos));
+    const bFrac = bPos - bIdx;
+    const ringEnergy = orbState.bands[bIdx] * (1 - bFrac) + orbState.bands[bIdx + 1] * bFrac;
+
+    // 1) GRAVE: Deep l=2 ellipsoidal breathing + slow heavy equatorial pulse
+    const graveWave = Math.min(1.3, wGrave) * (
+      0.26 * Math.cos(d.lat * 2.0 - wp * 0.55) +
+      0.14 * Math.cos(d.lon * 2.0 + wp * 0.4) * Math.cos(d.lat)
+    );
+
+    // 2) MÉDIO: Flowing 3-lobe / 4-lobe organic ribbon waves
+    const midWave = Math.min(1.3, wMid) * (
+      0.22 * Math.sin(d.lat * 3.0 - wp * 0.95) +
+      0.16 * Math.sin(d.lon * 3.0 + d.lat * 2.0 + wp * 0.85)
+    );
+
+    // 3) AGUDO: High-frequency 6/8-lobe crystalline star-ripples across the sphere
+    const agudoWave = Math.min(1.4, wAgudo) * (
+      0.22 * Math.sin(d.lat * 9.0 - wp * 1.8) +
+      0.20 * Math.cos(d.lon * 6.0 - wp * 1.6) * Math.cos(d.lat * 3.0)
+    );
+
+    const eqWave = ringEnergy * 0.18 * Math.sin(d.lon * 3.0 + wp);
+    const idleWave = 0.032 * (0.62 * Math.sin(t * 2.1 - d.ringU * 7.8) + 0.38 * Math.sin(t * 1.27 + d.ringU * 12.4));
+
+    const disp = 1 + idleWave + graveWave + midWave + agudoWave + eqWave;
+
+    const x1 = d.x * ca + d.z * sa;
+    const z1 = -d.x * sa + d.z * ca;
+    const y2 = d.y * ct - z1 * st;
+    const z2 = d.y * st + z1 * ct;
+
+    const px = cx + x1 * R * disp;
+    const py = cy + y2 * R * disp;
+    const depth = Math.max(0, Math.min(1, (z2 + 1) * 0.5));
+
+    const lonRot = Math.atan2(z1, x1);
+    const dAng = Math.atan2(Math.sin(lonRot - t * 2.6), Math.cos(lonRot - t * 2.6));
+    const scanBoost = Math.exp(-Math.pow(dAng / 0.45, 2)) * Math.max(0, z2) * orbState.scan;
+    const crest = Math.max(0, Math.min(1, (disp - 1) * 2.8));
+
+    const col = getPitchColor((d.hue + d.ringU * 0.35 + t * 0.06) % 1, orbState.pitch);
+    const hl = Math.min(1, scanBoost * 0.7 + crest * 0.45 + orbState.treble * 0.25);
+    const r = (col[0] + (255 - col[0]) * hl) | 0;
+    const g = (col[1] + (255 - col[1]) * hl) | 0;
+    const b = (col[2] + (255 - col[2]) * hl) | 0;
+    const rad = baseR * (0.42 + 0.78 * depth) * (1 + 0.75 * scanBoost + 0.38 * crest);
+    const alpha = Math.min(1, (48 + 205 * depth + 45 * scanBoost + 30 * crest) / 255);
+
+    projected.push({ px, py, z2, rad, r, g, b, alpha });
+  }
+
+  projected.sort((a, b) => a.z2 - b.z2);
+  for (let i = 0; i < projected.length; i++) {
+    const p = projected[i];
+    ctx.fillStyle = `rgba(${p.r},${p.g},${p.b},${p.alpha.toFixed(3)})`;
+    ctx.beginPath();
+    ctx.arc(p.px, p.py, p.rad, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  requestAnimationFrame(renderOrb);
+}
+requestAnimationFrame(renderOrb);
+
+// ─── STATE SYNCHRONIZATION FROM PYTHON ───────────────────────────────────────
+window.updateOrbSpectrum = function(spec) {
+  if (!spec) return;
+  orbState.rmsT = Math.max(orbState.rmsT * 0.45, Math.min(1, (spec.rms || 0) * 1.9));
+  orbState.bassT = Math.max(orbState.bassT * 0.45, Math.min(1, (spec.bass || 0) * 1.6));
+  orbState.midT = Math.max(orbState.midT * 0.45, Math.min(1, (spec.mid || 0) * 1.6));
+  orbState.trebleT = Math.max(orbState.trebleT * 0.45, Math.min(1, (spec.treble || 0) * 1.7));
+  if ((spec.rms || 0) > 0.025 && typeof spec.pitch === 'number') {
+    orbState.pitchT = spec.pitch;
+  }
+  if (Array.isArray(spec.bands) && spec.bands.length === 8) {
+    for (let i = 0; i < 8; i++) {
+      orbState.bandsT[i] = Math.max(orbState.bandsT[i] * 0.4, Math.min(1, spec.bands[i] * 1.65));
+    }
+  }
+  if (orbState.mode === 'listening') {
+    const statusEl = document.getElementById('audioStatus');
+    if (statusEl && statusEl.textContent.startsWith('Ouvindo')) {
+      if ((spec.rms || 0) > 0.045) {
+        const p = orbState.pitch;
+        const nota = p < 0.34 ? 'Grave' : (p > 0.64 ? 'Agudo' : 'Médio');
+        statusEl.textContent = 'Ouvindo · ' + nota;
+      } else if (orbState.rms < 0.025) {
+        statusEl.textContent = 'Ouvindo...';
+      }
+    }
+  }
+};
+
+window.setOrbState = function(recording, processing) {
+  const dot = document.getElementById('recDot');
+  const pillText = document.getElementById('recordPillText');
+  const timerTag = document.getElementById('timerTag');
+  if (recording) {
+    orbState.mode = 'listening';
+    orbState.scanT = 0;
+    dot.className = 'rec-dot';
+    pillText.textContent = 'Espaço para concluir';
+    timerTag.style.display = 'inline';
+  } else if (processing) {
+    orbState.mode = 'working';
+    orbState.scanT = 1;
+    dot.className = 'rec-dot working';
+    pillText.textContent = 'Processando IA...';
+    timerTag.style.display = 'none';
+  } else {
+    orbState.mode = 'idle';
+    orbState.scanT = 0;
+    dot.className = 'rec-dot idle';
+    pillText.textContent = 'Espaço para gravar';
+    timerTag.style.display = 'none';
+  }
+};
+
+window.setAudioStatus = function(mainText, timerStr) {
+  if (mainText != null) document.getElementById('audioStatus').textContent = mainText;
+  if (timerStr != null) document.getElementById('timerTag').textContent = timerStr;
+};
+
+window.setTheme = function(isLight) {
+  document.body.classList.toggle('light', !!isLight);
+};
+
+window.populateOptions = function(optionsList) {
+  const grid = document.getElementById('optionsGrid');
+  grid.innerHTML = '';
+  (optionsList || []).forEach(key => {
+    if (key === 'Custom' || key === 'Corrigir PT-BR') return;
+    const btn = document.createElement('button');
+    btn.className = 'opt-btn';
+    btn.innerHTML = `<span class="opt-dot"></span><span>${key}</span>`;
+    btn.onclick = () => sendIPC({ action: 'run_option', key });
+    grid.appendChild(btn);
+  });
+};
+
+window.populateMics = function(mics, selectedIdx) {
+  const list = document.getElementById('micList');
+  list.innerHTML = '';
+  (mics || []).forEach(item => {
+    const btn = document.createElement('button');
+    const isSel = (item.index === selectedIdx);
+    btn.className = 'mic-item' + (isSel ? ' selected' : '');
+    btn.textContent = item.label.replace('🎙️ ', '');
+    btn.onclick = () => {
+      document.getElementById('micPopover').classList.remove('open');
+      sendIPC({ action: 'select_mic', index: item.index, label: item.label });
+    };
+    list.appendChild(btn);
+  });
+};
+
+window.setViewMode = function(mode) {
+  // mode: 'audio' | 'text' | 'working'
+  const isAudioOrWorking = (mode === 'audio' || mode === 'working');
+  document.getElementById('tabAudio').classList.toggle('active', mode === 'audio');
+  document.getElementById('tabText').classList.toggle('active', mode === 'text');
+  document.getElementById('modePill').style.visibility = (mode === 'working') ? 'hidden' : 'visible';
+
+  document.getElementById('audioView').classList.toggle('active', isAudioOrWorking);
+  document.getElementById('textView').classList.toggle('active', mode === 'text');
+
+  document.getElementById('micMenuBtn').style.display = (mode === 'audio') ? 'flex' : 'none';
+  document.getElementById('browseAudioBtn').style.display = (mode === 'audio') ? 'flex' : 'none';
+  document.getElementById('editBtnsBtn').style.display = (mode === 'text') ? 'flex' : 'none';
+  document.getElementById('micPopover').classList.remove('open');
+
+  if (mode === 'text') {
+    setTimeout(() => {
+      const inp = document.getElementById('customInput');
+      if (inp) { inp.value = ''; inp.focus(); }
+    }, 40);
+  }
+};
+
+function userSwitchMode(mode) {
+  window.setViewMode(mode);
+  sendIPC({ action: 'switch_mode', mode });
+}
+
+function toggleMicPopover() {
+  document.getElementById('micPopover').classList.toggle('open');
+}
+
+function submitCustomOrDefault() {
+  const val = document.getElementById('customInput').value.trim();
+  if (val) {
+    sendIPC({ action: 'run_custom', text: val });
+  } else {
+    sendIPC({ action: 'run_option', key: 'Corrigir PT-BR' });
+  }
+}
+
+document.getElementById('customInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitCustomOrDefault();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    sendIPC({ action: 'close' });
+  }
+});
+
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    sendIPC({ action: 'close' });
+    return;
+  }
+  const isAudioVisible = document.getElementById('audioView').classList.contains('active');
+  if (isAudioVisible && (e.code === 'Space' || e.key === ' ' || e.key === 'Enter')) {
+    if (!e.ctrlKey && !e.altKey && !e.repeat) {
+      e.preventDefault();
+      sendIPC({ action: 'space_stop_or_toggle' });
+    }
+  }
+});
+</script>
+</body>
+</html>

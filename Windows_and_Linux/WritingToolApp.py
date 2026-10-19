@@ -15,6 +15,7 @@ import ui.OnboardingWindow
 import ui.ResponseWindow
 import ui.SettingsWindow
 from aiprovider import GeminiProvider, OllamaProvider, OpenAICompatibleProvider, obfuscate_api_key
+from audio_transcriber import AudioTranscriber
 from pynput import keyboard as pykeyboard
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QLocale, Signal, Slot
@@ -50,6 +51,7 @@ class WritingToolApp(QtWidgets.QApplication):
 
     def __init__(self, argv):
         super().__init__(argv)
+        self.setQuitOnLastWindowClosed(False)
         self.current_response_window = None
         logging.debug('Initializing WritingToolApp')
         self.output_ready_signal.connect(self.replace_text)
@@ -78,13 +80,27 @@ class WritingToolApp(QtWidgets.QApplication):
         self.paused = False
         self.toggle_action = None
 
-        # Holder for the user's selected text. Populated asynchronously by a
-        # background thread so the popup can show instantly — see `_show_popup`
-        # and `_fire_ctrl_c_and_capture_async`. The lock serializes Ctrl+C
-        # captures across rapid hotkey presses so two captures don't fight
-        # over the clipboard at once.
+        # Holder for the user's selected text.
         self.current_text_holder = None
         self._capture_lock = threading.Lock()
+
+        # Initialize AudioTranscriber (sounddevice + faster-whisper CUDA/CPU configurable)
+        whisper_model = (self.config or {}).get('whisper_model', 'large-v3')
+        whisper_device = (self.config or {}).get('whisper_device', 'auto')
+        saved_mic_device = (self.config or {}).get('microphone_device', None)
+        self.audio_transcriber = AudioTranscriber(
+            self,
+            default_model_size=whisper_model,
+            device_index=saved_mic_device,
+            whisper_device=whisper_device
+        )
+        self.audio_transcriber.status_changed.connect(self._on_audio_status_changed)
+        self.audio_transcriber.audio_level_signal.connect(self._on_audio_level)
+        self.audio_transcriber.audio_spectrum_signal.connect(self._on_audio_spectrum)
+        self.audio_transcriber.transcription_finished.connect(self._on_transcription_finished)
+        self.audio_transcriber.transcription_error.connect(self._on_transcription_error)
+        # Preload Whisper on CUDA in background so first transcription is fast
+        self.audio_transcriber.preload_model_async()
 
         self._ = gettext.gettext
 
@@ -96,33 +112,68 @@ class WritingToolApp(QtWidgets.QApplication):
         self.providers = [GeminiProvider(self), OpenAICompatibleProvider(self), OllamaProvider(self)]
 
         if not self.config:
-            logging.debug('No config found, showing onboarding')
+            logging.debug('No config found, creating default config and showing onboarding')
+            self.config = {
+                'shortcut': 'ctrl+space',
+                'theme': 'gradient',
+                'streaming': False,
+                'provider': 'Gemini (Recommended)',
+                'providers': {
+                    'Gemini (Recommended)': {
+                        'api_key': '',
+                        'model_name': 'gemini-flash-latest'
+                    },
+                    'OpenAI Compatible (For Experts)': {
+                        'api_key': '',
+                        'api_base': 'https://api.openai.com/v1',
+                        'api_organisation': '',
+                        'api_project': '',
+                        'api_model': 'gpt-4o-mini'
+                    },
+                    'Ollama (For Experts)': {
+                        'api_base': 'http://localhost:11434',
+                        'api_model': 'llama3.1:8b',
+                        'keep_alive': '5'
+                    }
+                },
+                'is_config_file_updated_for_v8': True,
+                'is_config_file_updated_for_v9': True
+            }
+            self.save_config(self.config)
             self.show_onboarding()
-        else:
-            logging.debug('Config found, setting up hotkey and tray icon')
 
-            # Initialize the current provider, defaulting to Gemini
-            provider_name = self.config.get('provider', 'Gemini')
+        logging.debug('Setting up provider, hotkey and tray icon')
+        provider_name = self.config.get('provider', 'Gemini (Recommended)')
+        self.current_provider = next((provider for provider in self.providers if provider.provider_name == provider_name), None)
+        if not self.current_provider:
+            logging.warning(f'Provider {provider_name} not found. Using default provider.')
+            self.current_provider = self.providers[0]
 
-            self.current_provider = next((provider for provider in self.providers if provider.provider_name == provider_name), None)
-            if not self.current_provider:
-                logging.warning(f'Provider {provider_name} not found. Using default provider.')
-                self.current_provider = self.providers[0]
+        self.current_provider.load_config(self.config.get("providers", {}).get(provider_name, {}))
 
-            self.current_provider.load_config(self.config.get("providers", {}).get(provider_name, {}))
+        self.create_tray_icon()
+        self.register_hotkey()
 
-            self.create_tray_icon()
-            self.register_hotkey()
+        try:
+            lang = self.config['locale']
+        except KeyError:
+            lang = None
+        self.change_language(lang)
 
-            try:
-                lang = self.config['locale']
-            except KeyError:
-                lang = None
-            self.change_language(lang)
+        # Pre-warm the Chromium/Electron popup window in background so Ctrl+Space opens in <10ms
+        try:
+            self.popup_window = ui.CustomPopupWindow.CustomPopupWindow(
+                self,
+                initial_mode="audio",
+                auto_start_recording=False
+            )
+            self.popup_window.hide()
+        except Exception as e:
+            logging.warning(f"Popup pre-warm notice: {e}")
 
-            # Initialize update checker
-            self.update_checker = UpdateChecker(self)
-            self.update_checker.check_updates_async()
+        # Initialize update checker
+        self.update_checker = UpdateChecker(self)
+        self.update_checker.check_updates_async()
 
         self.recent_triggers = []  # Track recent hotkey triggers
         self.TRIGGER_WINDOW = 1.5  # Time window in seconds
@@ -186,7 +237,7 @@ class WritingToolApp(QtWidgets.QApplication):
         self.config_path = os.path.join(os.path.dirname(sys.argv[0]), 'config.json')
         logging.debug(f'Loading config from {self.config_path}')
         if os.path.exists(self.config_path):
-            with open(self.config_path, 'r') as f:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
                 self.config = json.load(f)
                 logging.debug('Config loaded successfully')
         else:
@@ -318,7 +369,7 @@ class WritingToolApp(QtWidgets.QApplication):
         self.options_path = os.path.join(os.path.dirname(sys.argv[0]), 'options.json')
         logging.debug(f'Loading options from {self.options_path}')
         if os.path.exists(self.options_path):
-            with open(self.options_path, 'r') as f:
+            with open(self.options_path, 'r', encoding='utf-8') as f:
                 self.options = json.load(f)
                 logging.debug('Options loaded successfully')
         else:
@@ -329,8 +380,8 @@ class WritingToolApp(QtWidgets.QApplication):
         """
         Save the configuration file.
         """
-        with open(self.config_path, 'w') as f:
-            json.dump(config, f, indent=4)
+        with open(self.config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
             logging.debug('Config saved successfully')
         self.config = config
 
@@ -355,47 +406,174 @@ class WritingToolApp(QtWidgets.QApplication):
             for t in hotkey_str.split('+')
         )
 
+    @staticmethod
+    def _attach_thread_to_default_desktop():
+        """Ensure the current thread is attached to the interactive WinSta0\\Default desktop."""
+        if sys.platform != 'win32':
+            return
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hdefault = user32.OpenDesktopW('Default', 0, True, 0x01FF)
+            if hdefault:
+                user32.SetThreadDesktop(hdefault)
+        except Exception as e:
+            logging.debug(f'SetThreadDesktop notice: {e}')
+
+    @staticmethod
+    def _parse_win32_hotkey(hotkey_str: str):
+        """
+        Parse a shortcut string like 'ctrl+space' or 'ctrl+shift+space' into
+        (win32_modifiers, virtual_key_code).
+        """
+        MOD_ALT = 0x0001
+        MOD_CONTROL = 0x0002
+        MOD_SHIFT = 0x0004
+        MOD_WIN = 0x0008
+        MOD_NOREPEAT = 0x4000
+
+        VK_MAP = {
+            'space': 0x20,
+            'enter': 0x0D,
+            'return': 0x0D,
+            'tab': 0x09,
+            'esc': 0x1B,
+            'escape': 0x1B,
+            'backspace': 0x08,
+            'delete': 0x2E,
+            'insert': 0x2D,
+            'home': 0x24,
+            'end': 0x23,
+            'pageup': 0x21,
+            'pagedown': 0x22,
+            'up': 0x26,
+            'down': 0x28,
+            'left': 0x25,
+            'right': 0x27,
+        }
+        for i in range(1, 25):
+            VK_MAP[f'f{i}'] = 0x70 + (i - 1)
+
+        mods = MOD_NOREPEAT
+        vk = 0
+        parts = [p.strip().lower().strip('<>') for p in (hotkey_str or '').split('+') if p.strip()]
+        for p in parts:
+            if p in ('ctrl', 'control', 'ctrl_l', 'ctrl_r'):
+                mods |= MOD_CONTROL
+            elif p in ('shift', 'shift_l', 'shift_r'):
+                mods |= MOD_SHIFT
+            elif p in ('alt', 'alt_l', 'alt_r', 'alt_gr'):
+                mods |= MOD_ALT
+            elif p in ('win', 'cmd', 'super'):
+                mods |= MOD_WIN
+            elif p in VK_MAP:
+                vk = VK_MAP[p]
+            elif len(p) == 1 and p.isalnum():
+                vk = ord(p.upper())
+        return mods, vk
+
     def start_hotkey_listener(self):
         """
-        Build a single `GlobalHotKeys` listener that handles both the main
-        Writing Tools shortcut AND any per-button direct hotkeys defined in
-        options.json. Per-button hotkeys fire the corresponding option
-        immediately, skipping the popup.
-
-        On conflict between a button hotkey and the global shortcut (or
-        between two button hotkeys), the first registration wins and the
-        later one is logged and skipped — the listener can't dispatch to
-        two callbacks for the same combination anyway.
+        Register global hotkeys using native Win32 `RegisterHotKey` on the
+        interactive Default desktop (reliable across all Windows apps and IDEs),
+        with a pynput fallback for non-Windows platforms.
         """
         try:
+            # Stop previous listeners if any
+            if getattr(self, '_win32_hotkey_thread_id', None):
+                try:
+                    import ctypes
+                    ctypes.windll.user32.PostThreadMessageW(self._win32_hotkey_thread_id, 0x0012, 0, 0)  # WM_QUIT
+                except Exception:
+                    pass
+                self._win32_hotkey_thread_id = None
+
             if self.hotkey_listener is not None:
-                self.hotkey_listener.stop()
+                try:
+                    self.hotkey_listener.stop()
+                except Exception:
+                    pass
                 self.hotkey_listener = None
 
-            hotkey_map = {}
-
-            # --- Global Writing Tools hotkey ----------------------------------
             orig_shortcut = self.config.get('shortcut', 'ctrl+space')
             self.registered_hotkey = orig_shortcut
-            try:
-                global_parsed = self._to_pynput_hotkey(orig_shortcut)
-                # Validate by parsing — raises if malformed.
-                pykeyboard.HotKey.parse(global_parsed)
+
+            if sys.platform == 'win32':
+                import ctypes
+                import ctypes.wintypes
+
+                bindings = []  # list of (hotkey_id, raw_str, mods, vk, callback)
 
                 def on_global_activate():
                     if self.paused:
                         return
-                    logging.debug('triggered global hotkey')
+                    logging.info(f'Global hotkey triggered ({orig_shortcut})')
                     self.hotkey_triggered_signal.emit()
 
-                hotkey_map[global_parsed] = on_global_activate
-                logging.debug(f'Registered global hotkey: {global_parsed}')
-            except Exception as e:
-                logging.error(f'Failed to parse global hotkey "{orig_shortcut}": {e}')
+                g_mods, g_vk = self._parse_win32_hotkey(orig_shortcut)
+                if g_vk:
+                    bindings.append((1, orig_shortcut, g_mods, g_vk, on_global_activate))
 
-            # --- Per-button direct hotkeys ------------------------------------
-            # Custom is excluded — it needs a typed instruction from the user,
-            # so a "fire directly" hotkey doesn't make sense for it.
+                next_id = 2
+                if self.options:
+                    for button_name, button_cfg in self.options.items():
+                        if button_name == 'Custom':
+                            continue
+                        raw = (button_cfg.get('hotkey') or '').strip()
+                        if not raw:
+                            continue
+                        b_mods, b_vk = self._parse_win32_hotkey(raw)
+                        if b_vk:
+                            bindings.append((next_id, raw, b_mods, b_vk, self._make_button_hotkey_callback(button_name)))
+                            next_id += 1
+
+                def _win32_hotkey_loop():
+                    self._attach_thread_to_default_desktop()
+                    user32 = ctypes.windll.user32
+                    kernel32 = ctypes.windll.kernel32
+                    self._win32_hotkey_thread_id = kernel32.GetCurrentThreadId()
+
+                    cb_map = {}
+                    for hid, raw_str, mods, vk, cb in bindings:
+                        ok = user32.RegisterHotKey(None, hid, mods, vk)
+                        if ok:
+                            cb_map[hid] = cb
+                            logging.info(f'Win32 RegisterHotKey registered: "{raw_str}" (id={hid})')
+                        else:
+                            err = ctypes.GetLastError()
+                            logging.warning(f'Win32 RegisterHotKey failed for "{raw_str}" (err={err})')
+
+                    msg = ctypes.wintypes.MSG()
+                    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                        if msg.message == 0x0312:  # WM_HOTKEY
+                            hid = int(msg.wParam)
+                            if hid in cb_map:
+                                try:
+                                    cb_map[hid]()
+                                except Exception as e:
+                                    logging.error(f'Error in hotkey callback: {e}')
+                        user32.TranslateMessage(ctypes.byref(msg))
+                        user32.DispatchMessageW(ctypes.byref(msg))
+
+                    for hid in cb_map:
+                        user32.UnregisterHotKey(None, hid)
+
+                t = threading.Thread(target=_win32_hotkey_loop, daemon=True)
+                t.start()
+                return
+
+            # Non-Windows fallback using pynput GlobalHotKeys
+            hotkey_map = {}
+            global_parsed = self._to_pynput_hotkey(orig_shortcut)
+            pykeyboard.HotKey.parse(global_parsed)
+
+            def on_global_activate_pynput():
+                if self.paused:
+                    return
+                logging.debug('triggered global hotkey')
+                self.hotkey_triggered_signal.emit()
+
+            hotkey_map[global_parsed] = on_global_activate_pynput
             if self.options:
                 for button_name, button_cfg in self.options.items():
                     if button_name == 'Custom':
@@ -405,30 +583,17 @@ class WritingToolApp(QtWidgets.QApplication):
                         continue
                     try:
                         parsed = self._to_pynput_hotkey(raw)
-                        # Same validation path as the global shortcut.
                         pykeyboard.HotKey.parse(parsed)
-                    except Exception as e:
-                        logging.error(
-                            f'Invalid hotkey "{raw}" for button "{button_name}": {e}'
-                        )
+                        if parsed not in hotkey_map:
+                            hotkey_map[parsed] = self._make_button_hotkey_callback(button_name)
+                    except Exception:
                         continue
-                    if parsed in hotkey_map:
-                        logging.warning(
-                            f'Hotkey "{raw}" for button "{button_name}" '
-                            f'conflicts with an already-registered binding; skipping'
-                        )
-                        continue
-                    hotkey_map[parsed] = self._make_button_hotkey_callback(button_name)
-                    logging.debug(f'Registered button hotkey: {parsed} -> {button_name}')
 
-            if not hotkey_map:
-                logging.warning('No hotkeys to register')
-                return
-
-            self.hotkey_listener = pykeyboard.GlobalHotKeys(hotkey_map)
-            self.hotkey_listener.start()
+            if hotkey_map:
+                self.hotkey_listener = pykeyboard.GlobalHotKeys(hotkey_map)
+                self.hotkey_listener.start()
         except Exception as e:
-            logging.error(f'Failed to register hotkey listener: {e}')
+            logging.error(f'Failed to register hotkey listener: {e}', exc_info=True)
 
     def _make_button_hotkey_callback(self, button_name):
         """
@@ -472,7 +637,7 @@ class WritingToolApp(QtWidgets.QApplication):
         # If the popup is currently visible (e.g., user opened it then
         # pressed a button hotkey), close it so it doesn't compete.
         if self.popup_window is not None and self.popup_window.isVisible():
-            self.popup_window.close()
+            self.popup_window.close_popup()
 
         # Sanity check: button must still exist in options. Could be stale
         # if options.json was edited externally between registration and
@@ -521,80 +686,102 @@ class WritingToolApp(QtWidgets.QApplication):
     @Slot()
     def _show_popup(self):
         """
-        Show the popup window the moment the hotkey fires, and capture the
-        user's selected text in parallel — popup display no longer waits on
-        the clipboard. The old behaviour gated popup show on a 0.2-0.5s
-        clipboard read, which on slower systems would time out and
-        incorrectly fall back to the chat-only "Ask your AI" UI even when
-        text *was* selected. We now assume text is always selected;
-        `process_option_thread` waits on the holder before kicking off the
-        AI request.
+        Show the popup window when the global hotkey fires.
+        - If the popup is ALREADY visible and recording audio, pressing Ctrl+Space
+          finishes the recording and starts transcription immediately!
+        - Otherwise:
+          1. Inject Ctrl+C while focus is still on the user's active window and
+             capture selected text (up to 0.22s fast check).
+          2. If text IS selected -> open popup in 'Modo Texto'.
+          3. If NO text is selected -> open popup in 'Modo Áudio' and AUTOMATICALLY
+             start recording the microphone (Space to finish & transcribe).
         """
         logging.debug('Showing popup window')
 
-        # Fresh holder per popup. Fire Ctrl+C *before* we create the popup
-        # so the keystroke is queued while focus is still on the user's
-        # source app — the actual clipboard read happens in the background.
+        # If popup is already visible and actively recording, finish recording & transcribe!
+        if (
+            self.popup_window is not None
+            and self.popup_window.isVisible()
+            and hasattr(self, 'audio_transcriber')
+            and self.audio_transcriber.is_recording
+        ):
+            logging.info('Global hotkey pressed while recording -> finishing recording & transcribing!')
+            self.popup_window.finish_recording_and_transcribe()
+            return
+
+        # Fire Ctrl+C *before* showing the popup so focus is still on the target app
         self.current_text_holder = _SelectedTextHolder()
         self._fire_ctrl_c_and_capture_async(self.current_text_holder)
 
+        # Wait up to 0.22s so we immediately know whether text was selected
+        self.current_text_holder.ready.wait(timeout=0.22)
+        captured_text = (self.current_text_holder.text or '').strip()
+        initial_mode = "text" if captured_text else "audio"
+        logging.debug(f'Popup initial_mode={initial_mode} (captured len={len(captured_text)})')
+
         try:
-            if self.popup_window is not None:
-                logging.debug('Existing popup window found')
-                if self.popup_window.isVisible():
-                    logging.debug('Closing existing visible popup window')
-                    self.popup_window.close()
-                self.popup_window = None
-            logging.debug('Creating new popup window')
-            self.popup_window = ui.CustomPopupWindow.CustomPopupWindow(self)
+            if self.popup_window is None:
+                self.popup_window = ui.CustomPopupWindow.CustomPopupWindow(
+                    self,
+                    initial_mode=initial_mode,
+                    auto_start_recording=(initial_mode == "audio")
+                )
+            else:
+                self.popup_window.open_in_mode(
+                    initial_mode,
+                    auto_record=(initial_mode == "audio")
+                )
 
             # Set the window icon
             icon_path = os.path.join(os.path.dirname(sys.argv[0]), 'icons', 'app_icon.png')
-            if os.path.exists(icon_path): self.setWindowIcon(QtGui.QIcon(icon_path))
+            if os.path.exists(icon_path):
+                self.setWindowIcon(QtGui.QIcon(icon_path))
+
             # Get the screen containing the cursor
             cursor_pos = QCursor.pos()
             screen = QGuiApplication.screenAt(cursor_pos)
             if screen is None:
                 screen = QGuiApplication.primaryScreen()
             screen_geometry = screen.geometry()
-            logging.debug(f'Cursor is on screen: {screen.name()}')
-            logging.debug(f'Screen geometry: {screen_geometry}')
-            # Show the popup to get its size
-            self.popup_window.show()
-            self.popup_window.adjustSize()
-            # Ensure the popup it's focused, even on lower-end machines
-            self.popup_window.activateWindow()
-            QtCore.QTimer.singleShot(100, self.popup_window.custom_input.setFocus)
 
             popup_width = self.popup_window.width()
             popup_height = self.popup_window.height()
-            # Calculate position
             x = cursor_pos.x()
-            y = cursor_pos.y() + 20  # 20 pixels below cursor
-            # Adjust if the popup would go off the right edge of the screen
+            y = cursor_pos.y() + 18
             if x + popup_width > screen_geometry.right():
                 x = screen_geometry.right() - popup_width
-            # Adjust if the popup would go off the bottom edge of the screen
             if y + popup_height > screen_geometry.bottom():
-                y = cursor_pos.y() - popup_height - 10  # 10 pixels above cursor
+                y = cursor_pos.y() - popup_height - 10
             self.popup_window.move(x, y)
-            logging.debug(f'Popup window moved to position: ({x}, {y})')
+
+            self.popup_window.show()
+            self.popup_window.force_foreground_focus()
+            logging.debug(f'Popup window shown at ({x}, {y}) in mode={initial_mode}')
         except Exception as e:
             logging.error(f'Error showing popup window: {e}', exc_info=True)
 
+    @Slot(str)
+    def _switch_popup_to_text_mode_if_late_capture(self, captured_text: str):
+        """If clipboard took >220ms to populate, cancel auto-record and switch popup to Text Mode."""
+        if (
+            self.popup_window is not None
+            and self.popup_window.isVisible()
+            and self.popup_window.current_mode == "audio"
+            and not self.popup_window.is_busy_processing
+            and (time.time() - getattr(self.popup_window, '_opened_ts', 0.0) < 0.85)
+        ):
+            logging.debug('Late clipboard capture arrived; switching popup to text mode')
+            if hasattr(self, 'audio_transcriber') and self.audio_transcriber.is_recording:
+                self.popup_window.record_timer.stop()
+                self.audio_transcriber.cancel_recording()
+            self.popup_window.set_mode("text")
+
     def _fire_ctrl_c_and_capture_async(self, holder):
         """
-        Inject Ctrl+C now (must happen while focus is still on the user's
-        source app, before the popup is shown), then poll the clipboard
-        for the result in a background thread. Returns immediately so the
-        popup can display with no perceptible delay.
-
-        Slow systems' clipboard subsystems can take a while to populate
-        after Ctrl+C — that's the whole reason this is async. The polling
-        timeout is generous; an empty result after timeout means the user
-        pressed the hotkey without actually selecting anything, which
-        `process_option_thread` reports as a normal error.
+        Inject Ctrl+C now (while focus is still on the user's source app),
+        then poll the clipboard in a background thread.
         """
+        self._attach_thread_to_default_desktop()
         try:
             clipboard_backup = pyperclip.paste()
         except Exception:
@@ -602,22 +789,41 @@ class WritingToolApp(QtWidgets.QApplication):
 
         self.clear_clipboard()
 
-        kbrd = pykeyboard.Controller()
         try:
-            kbrd.press(pykeyboard.Key.ctrl.value)
-            kbrd.press('c')
-            kbrd.release('c')
-            kbrd.release(pykeyboard.Key.ctrl.value)
+            if sys.platform == 'win32':
+                import ctypes
+                user32 = ctypes.windll.user32
+                KEYEVENTF_KEYUP = 0x0002
+                VK_CONTROL = 0x11
+                VK_SHIFT = 0x10
+                VK_MENU = 0x12
+                VK_SPACE = 0x20
+                VK_C = 0x43
+                # Release Space/Shift/Alt if still logically held from the hotkey chord,
+                # then press Ctrl+C cleanly.
+                user32.keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_SHIFT, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_MENU, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                user32.keybd_event(VK_C, 0, 0, 0)
+                user32.keybd_event(VK_C, 0, KEYEVENTF_KEYUP, 0)
+                user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+            else:
+                kbrd = pykeyboard.Controller()
+                kbrd.press(pykeyboard.Key.ctrl.value)
+                kbrd.press('c')
+                kbrd.release('c')
+                kbrd.release(pykeyboard.Key.ctrl.value)
         except Exception as e:
             logging.error(f'Error simulating Ctrl+C: {e}')
 
         def _poll_clipboard():
-            # Lock so concurrent hotkey presses don't trample each other's
-            # in-flight captures.
+            self._attach_thread_to_default_desktop()
             with self._capture_lock:
                 text = ''
                 try:
-                    deadline = time.time() + 2.0
+                    time.sleep(0.04)
+                    deadline = time.time() + 0.65
                     while time.time() < deadline:
                         try:
                             text = pyperclip.paste() or ''
@@ -626,9 +832,16 @@ class WritingToolApp(QtWidgets.QApplication):
                             text = ''
                         if text:
                             break
-                        time.sleep(0.05)
+                        time.sleep(0.03)
                     holder.text = text
                     logging.debug(f'Captured selected text (len={len(text)})')
+                    if text.strip():
+                        QtCore.QMetaObject.invokeMethod(
+                            self,
+                            "_switch_popup_to_text_mode_if_late_capture",
+                            QtCore.Qt.ConnectionType.QueuedConnection,
+                            QtCore.Q_ARG(str, text)
+                        )
                 finally:
                     try:
                         pyperclip.copy(clipboard_backup)
@@ -637,6 +850,111 @@ class WritingToolApp(QtWidgets.QApplication):
                     holder.ready.set()
 
         threading.Thread(target=_poll_clipboard, daemon=True).start()
+
+    # ─── AUDIO MODE: FASTER-WHISPER (CUDA FLOAT16) -> LLM -> CTRL+V ──────────
+
+    def process_audio_file(self, file_path: str, delete_after: bool = False):
+        """
+        Trigger asynchronous faster-whisper transcription on CUDA float16.
+        When finished, `_on_transcription_finished` sends the text to the
+        configured LLM for punctuation/grammar correction, closes the popup,
+        and pastes (Ctrl+V) into the active text field.
+        """
+        self.audio_transcriber.transcribe_file_async(file_path, delete_after=delete_after, language="pt")
+
+    @Slot(str)
+    def _on_audio_status_changed(self, status_text: str):
+        if self.popup_window is not None and self.popup_window.isVisible():
+            self.popup_window.update_audio_status(status_text)
+
+    @Slot(float)
+    def _on_audio_level(self, rms: float):
+        if self.popup_window is not None and self.popup_window.isVisible():
+            self.popup_window.update_audio_level(rms)
+
+    @Slot(dict)
+    def _on_audio_spectrum(self, spec: dict):
+        if self.popup_window is not None and self.popup_window.isVisible():
+            if hasattr(self.popup_window, "update_audio_spectrum"):
+                self.popup_window.update_audio_spectrum(spec)
+
+    @Slot(str)
+    def _on_transcription_error(self, error_msg: str):
+        logging.error(f"Audio transcription error: {error_msg}")
+        if self.popup_window is not None and self.popup_window.isVisible():
+            self.popup_window._reset_audio_ui()
+            self.popup_window.update_audio_status(f"⚠️ {error_msg}")
+
+    @Slot(str)
+    def _on_transcription_finished(self, raw_transcript: str):
+        """
+        Called when faster-whisper finishes transcribing the audio.
+        Passes the transcribed text through the configured LLM in WritingTools
+        (if audio_llm_refinement is enabled) to fix punctuation and grammar in PT-BR,
+        then closes the popup and pastes (Ctrl+V) into the active text field.
+        """
+        refine_enabled = (self.config or {}).get('audio_llm_refinement', True)
+        if not refine_enabled:
+            self._finish_audio_and_paste(raw_transcript.strip())
+            return
+
+        if self.popup_window is not None and self.popup_window.isVisible():
+            self.popup_window.update_audio_status("Refinando pontuação e gramática na IA...")
+
+        def _llm_refine_and_paste():
+            refined_text = raw_transcript.strip()
+            try:
+                if self.current_provider:
+                    system_instruction = (
+                        "Você é um assistente especialista em revisão de transcrições de áudio em Português do Brasil (PT-BR).\n"
+                        "Sua tarefa é corrigir a pontuação, acentuação, capitalização e erros gramaticais ou de transcrição fonética do texto ditado, "
+                        "eliminando vícios de fala óbvios (como 'ééé', 'hmm'), mas mantendo fielmente o sentido, o vocabulário e o tom original de quem falou.\n"
+                        "Retorne APENAS o texto final corrigido e pontuado, sem nenhum comentário, sem aspas extras e sem introduções."
+                    )
+                    prompt = f"Corrija a pontuação e a gramática desta transcrição de áudio:\n\n{raw_transcript}"
+                    llm_result = self.current_provider.get_response(
+                        system_instruction,
+                        prompt,
+                        return_response=True
+                    )
+                    if (
+                        llm_result
+                        and llm_result.strip()
+                        and "ERROR_TEXT_INCOMPATIBLE_WITH_REQUEST" not in llm_result
+                        and not llm_result.startswith("An error occurred")
+                    ):
+                        refined_text = llm_result.strip()
+            except Exception as e:
+                logging.error(f"LLM refinement failed, falling back to raw Whisper transcript: {e}")
+
+            QtCore.QMetaObject.invokeMethod(
+                self,
+                "_finish_audio_and_paste",
+                QtCore.Qt.ConnectionType.QueuedConnection,
+                QtCore.Q_ARG(str, refined_text)
+            )
+
+        threading.Thread(target=_llm_refine_and_paste, daemon=True).start()
+
+    @Slot(str)
+    def _finish_audio_and_paste(self, final_text: str):
+        """
+        Hide the floating popup window (returning OS focus to the active text
+        field) and paste the final text via Ctrl+V.
+        """
+        logging.info(f"Audio pipeline complete. Pasting text (len={len(final_text)})")
+        if self.popup_window is not None:
+            self.popup_window.is_busy_processing = False
+            self.popup_window.is_working_text = False
+            self.popup_window.hide()
+
+        def _delayed_paste():
+            # Wait briefly so Windows restores focus to the underlying text field
+            time.sleep(0.18)
+            self.output_queue = ""
+            self.output_ready_signal.emit(final_text)
+
+        threading.Thread(target=_delayed_paste, daemon=True).start()
 
     @staticmethod
     def clear_clipboard():
@@ -723,10 +1041,48 @@ class WritingToolApp(QtWidgets.QApplication):
             selected_prompt = self.options.get(option, ('', ''))
             prompt_prefix = selected_prompt['prefix']
             system_instruction = selected_prompt['instruction']
+            text_for_llm = selected_text
+            if option == 'Corrigir PT-BR':
+                import re
+                # 1. Strip accidental top-row keyboard digits bumped inside, before, or after words
+                #    (e.g., "12qual" -> "qual", "melho0r" -> "melhor", "eu8" -> "eu") while preserving standalone numbers like "100%"
+                text_for_llm = re.sub(r'(?<=[a-zA-ZÀ-ÿ])[0-9]+|[0-9]+(?=[a-zA-ZÀ-ÿ])', '', text_for_llm)
+                # 2. Fix punctuation and common PT-BR fast-typing shortcuts/transpositions
+                text_for_llm = text_for_llm.replace('en>?', 'né?').replace('en?', 'né?')
+                _ptbr_fast_map = [
+                    (r'\bentai\b', 'então'),
+                    (r'\bnoc aso\b', 'no caso'),
+                    (r'\bd aprada\b', 'da parada'),
+                    (r'\boe stiloera\b', 'o estilera'),
+                    (r'\bgastoq\b', 'gasto que'),
+                    (r'\bvcx\b', 'você'),
+                    (r'\bdboa\b', 'de boa'),
+                    (r'\bminah\b', 'minha'),
+                    (r'\btesrtar\b', 'testar'),
+                    (r'\bceritnho\b', 'certinho'),
+                    (r'\begmam\b', 'Gemma'),
+                    (r'\bamndsar\b', 'mandar'),
+                    (r'\bamdnar\b', 'mandar'),
+                    (r'\bpsosuvel\b', 'possível'),
+                    (r'\bpadroa\b', 'padrão'),
+                    (r'\bduplciar\b', 'duplicar'),
+                    (r'\btetxo\b', 'texto'),
+                    (r'\betxtod\b', 'texto'),
+                    (r'\bqualqwuer\b', 'qualquer'),
+                    (r'\bqualwuerr\b', 'qualquer'),
+                    (r'\bqazuqleur\b', 'qualquer'),
+                    (r'\brpa\b', 'pra'),
+                    (r'\bess ecaso\b', 'esse caso'),
+                    (r'\bevr\b', 'ver'),
+                    (r'\bafzer\b', 'fazer'),
+                    (r'\bbvora\b', 'bora'),
+                ]
+                for pat, repl in _ptbr_fast_map:
+                    text_for_llm = re.sub(pat, repl, text_for_llm, flags=re.IGNORECASE)
             if option == 'Custom':
-                prompt = f"{prompt_prefix}Described change: {custom_change}\n\nText: {selected_text}"
+                prompt = f"{prompt_prefix}Described change: {custom_change}\n\nText: {text_for_llm}"
             else:
-                prompt = f"{prompt_prefix}{selected_text}"
+                prompt = f"{prompt_prefix}{text_for_llm}"
 
             self.output_queue = ""
 
@@ -759,11 +1115,22 @@ class WritingToolApp(QtWidgets.QApplication):
             else:
                 self.show_message_signal.emit('Error', f'An error occurred: {e}')
 
+    def _close_working_popup(self):
+        """If the popup is showing the orb (text mode working state), hide it and let focus return."""
+        popup = self.popup_window
+        if popup is not None and getattr(popup, 'is_working_text', False):
+            popup.is_busy_processing = False
+            popup.is_working_text = False
+            popup.hide()
+            QApplication.processEvents()
+            time.sleep(0.18)  # let Windows hand focus back to the target text field
+
     @Slot(str, str)
     def show_message_box(self, title, message):
         """
         Show a message box with the given title and message.
         """
+        self._close_working_popup()
         QMessageBox.warning(None, title, message)
 
     def show_response_window(self, option, text):
@@ -801,7 +1168,7 @@ class WritingToolApp(QtWidgets.QApplication):
             logging.debug('Processing output text')
             try:
                 # For Summary and Key Points, show in response window
-                if hasattr(self, 'current_response_window'):
+                if getattr(self, 'current_response_window', None) is not None:
                     self.current_response_window.append_text(new_text)
                     
                     # If this is the initial response, add it to chat history
@@ -811,23 +1178,34 @@ class WritingToolApp(QtWidgets.QApplication):
                             "content": self.output_queue.rstrip('\n')
                         })
                 else:
-                    # For other options, use the original clipboard-based replacement
+                    # For other options, use clipboard-based replacement on the Default desktop
+                    self._close_working_popup()
+                    self._attach_thread_to_default_desktop()
                     clipboard_backup = pyperclip.paste()
                     cleaned_text = self.output_queue.rstrip('\n')
                     pyperclip.copy(cleaned_text)
-                    
-                    kbrd = pykeyboard.Controller()
-                    def press_ctrl_v():
+
+                    if sys.platform == 'win32':
+                        import ctypes
+                        user32 = ctypes.windll.user32
+                        KEYEVENTF_KEYUP = 0x0002
+                        VK_CONTROL = 0x11
+                        VK_V = 0x56
+                        user32.keybd_event(VK_CONTROL, 0, 0, 0)
+                        user32.keybd_event(VK_V, 0, 0, 0)
+                        user32.keybd_event(VK_V, 0, KEYEVENTF_KEYUP, 0)
+                        user32.keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0)
+                    else:
+                        kbrd = pykeyboard.Controller()
                         kbrd.press(pykeyboard.Key.ctrl.value)
                         kbrd.press('v')
                         kbrd.release('v')
                         kbrd.release(pykeyboard.Key.ctrl.value)
 
-                    press_ctrl_v()
                     time.sleep(0.2)
                     pyperclip.copy(clipboard_backup)
 
-                if not hasattr(self, 'current_response_window'):
+                if getattr(self, 'current_response_window', None) is None:
                     self.output_queue = ""
 
             except Exception as e:
@@ -1055,16 +1433,17 @@ class WritingToolApp(QtWidgets.QApplication):
         threading.Thread(target=process_thread, daemon=True).start()
 
     def show_settings(self, providers_only=False):
-
         """
         Show the settings window.
         """
         logging.debug('Showing settings window')
-        # Always create a new settings window to handle providers_only correctly
+        if self.settings_window is not None and self.settings_window.isVisible():
+            self.settings_window.close()
         self.settings_window = ui.SettingsWindow.SettingsWindow(self, providers_only=providers_only)
-        self.settings_window.close_signal.connect(self.exit_app)
         self.settings_window.retranslate_ui()
         self.settings_window.show()
+        self.settings_window.raise_()
+        self.settings_window.activateWindow()
 
 
     def show_about(self):

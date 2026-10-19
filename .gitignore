@@ -1,10 +1,23 @@
 # macOS system files
-
 .DS_Store
-Windows_and_Linux/config.json
 
+# User configuration & local API keys (NEVER commit config.json!)
+Windows_and_Linux/config.json
+Windows_and_Linux/start_silent.vbs
+
+# Node & build artifacts
+**/node_modules/
+**/dist/
+**/build/
+**/*.spec
+.venv/
+venv/
+
+# Python / IDE
 .idea
+.vscode
 **/__pycache__
+**/*.pyc
 **/*.mo
 **/pot_files
 

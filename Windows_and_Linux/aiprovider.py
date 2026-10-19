@@ -4,35 +4,17 @@ AI Provider Architecture for Writing Tools
 
 This module handles different AI model providers (Gemini, OpenAI-compatible, Ollama) and manages their interactions
 with the main application. It uses an abstract base class pattern for provider implementations.
-
-Key Components:
-1. AIProviderSetting – Base class for provider settings (e.g. API keys, model names)
-    • TextSetting      – A simple text input for settings
-    • DropdownSetting  – A dropdown selection setting
-
-2. AIProvider – Abstract base class that all providers implement.
-   It defines the interface for:
-      • Getting a response from the AI model
-      • Loading and saving configuration settings
-      • Cancelling an ongoing request
-
-3. Provider Implementations:
-    • GeminiProvider – Uses Google’s Generative AI API (Gemini) to generate content.
-    • OpenAICompatibleProvider – Connects to any OpenAI-compatible API (v1/chat/completions)
-    • OllamaProvider – Connects to a locally running Ollama server (e.g. for llama.cpp)
-
-Response Flow:
-   • The main app calls get_response() with a system instruction and a prompt.
-   • The provider formats and sends the request to its API endpoint.
-   • For operations that require a window (e.g. Summary, Key Points), the provider returns the full text.
-   • For direct text replacement, the provider emits the full text via the output_ready_signal.
-   • Conversation history (for follow-up questions) is maintained by the main app.
-
-Note: Streaming has been fully removed throughout the code.
 """
 
 import base64
+import json
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
 import webbrowser
 from abc import ABC, abstractmethod
 from typing import List
@@ -42,7 +24,7 @@ from google import genai
 from google.genai import types as genai_types
 from ollama import Client as OllamaClient
 from openai import OpenAI
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtWidgets import QVBoxLayout
 from ui.UIUtils import colorMode
 
@@ -110,17 +92,32 @@ class TextSetting(AIProviderSetting):
         self.input = None
 
     def render_to_layout(self, layout: QVBoxLayout):
-        row_layout = QtWidgets.QHBoxLayout()
+        row_layout = QtWidgets.QVBoxLayout()
+        row_layout.setSpacing(4)
         label = QtWidgets.QLabel(self.display_name)
-        label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode=='dark' else '#333333'};")
+        label.setStyleSheet(f"""
+            font-size: 13px;
+            font-weight: 600;
+            color: {'#ebebf5' if colorMode=='dark' else '#1d1d1f'};
+        """)
         row_layout.addWidget(label)
+
         self.input = QtWidgets.QLineEdit(self.internal_value)
+        input_bg = "rgba(255, 255, 255, 0.08)" if colorMode == "dark" else "rgba(0, 0, 0, 0.05)"
+        input_border = "rgba(255, 255, 255, 0.16)" if colorMode == "dark" else "rgba(0, 0, 0, 0.14)"
+        input_fg = "#f5f5f7" if colorMode == "dark" else "#1d1d1f"
         self.input.setStyleSheet(f"""
-            font-size: 16px;
-            padding: 5px;
-            background-color: {'#444' if colorMode=='dark' else 'white'};
-            color: {'#ffffff' if colorMode=='dark' else '#000000'};
-            border: 1px solid {'#666' if colorMode=='dark' else '#ccc'};
+            QLineEdit {{
+                font-size: 13px;
+                padding: 7px 10px;
+                background-color: {input_bg};
+                color: {input_fg};
+                border: 1px solid {input_border};
+                border-radius: 9px;
+            }}
+            QLineEdit:focus {{
+                border: 1px solid #0a84ff;
+            }}
         """)
         self.input.setPlaceholderText(self.description)
         row_layout.addWidget(self.input)
@@ -130,7 +127,7 @@ class TextSetting(AIProviderSetting):
         self.internal_value = value
 
     def get_value(self):
-        return self.input.text()
+        return self.input.text() if self.input else self.internal_value
 
 
 class DropdownSetting(AIProviderSetting):
@@ -141,12 +138,11 @@ class DropdownSetting(AIProviderSetting):
     When allow_custom=True, users can select "Custom" from the dropdown and enter any value.
     If the loaded config value doesn't match any preset option, "Custom" is auto-selected.
     """
-    # Sentinel value used internally to identify the "Custom" dropdown option
     _CUSTOM_SENTINEL = "__custom__"
 
     def __init__(self, name: str, display_name: str = None, default_value: str = None,
                  description: str = None, options: list = None, allow_custom: bool = False,
-                 custom_placeholder: str = "Enter custom value"):
+                 custom_placeholder: str = "Digite o nome do modelo customizado"):
         super().__init__(name, display_name, default_value, description)
         self.options = options if options else []
         self.internal_value = default_value
@@ -157,17 +153,48 @@ class DropdownSetting(AIProviderSetting):
         self.custom_input_container = None
 
     def render_to_layout(self, layout: QVBoxLayout):
-        row_layout = QtWidgets.QHBoxLayout()
+        row_layout = QtWidgets.QVBoxLayout()
+        row_layout.setSpacing(4)
         label = QtWidgets.QLabel(self.display_name)
-        label.setStyleSheet(f"font-size: 16px; color: {'#ffffff' if colorMode=='dark' else '#333333'};")
+        label.setStyleSheet(f"""
+            font-size: 13px;
+            font-weight: 600;
+            color: {'#ebebf5' if colorMode=='dark' else '#1d1d1f'};
+        """)
         row_layout.addWidget(label)
+
         self.dropdown = QtWidgets.QComboBox()
+        self.dropdown.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
+        combo_bg = "rgba(255, 255, 255, 0.08)" if colorMode == "dark" else "rgba(0, 0, 0, 0.05)"
+        combo_border = "rgba(255, 255, 255, 0.16)" if colorMode == "dark" else "rgba(0, 0, 0, 0.14)"
+        combo_fg = "#f5f5f7" if colorMode == "dark" else "#1d1d1f"
+        popup_bg = "#2c2c2e" if colorMode == "dark" else "#ffffff"
         self.dropdown.setStyleSheet(f"""
-            font-size: 16px;
-            padding: 5px;
-            background-color: {'#444' if colorMode=='dark' else 'white'};
-            color: {'#ffffff' if colorMode=='dark' else '#000000'};
-            border: 1px solid {'#666' if colorMode=='dark' else '#ccc'};
+            QComboBox {{
+                font-size: 13px;
+                padding: 6px 10px;
+                background-color: {combo_bg};
+                color: {combo_fg};
+                border: 1px solid {combo_border};
+                border-radius: 9px;
+            }}
+            QComboBox:hover {{
+                border: 1px solid #0a84ff;
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 24px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {popup_bg};
+                color: {combo_fg};
+                selection-background-color: #0a84ff;
+                selection-color: #ffffff;
+                border: 1px solid {combo_border};
+                border-radius: 8px;
+                padding: 4px;
+                outline: none;
+            }}
         """)
 
         # Add preset options
@@ -176,15 +203,13 @@ class DropdownSetting(AIProviderSetting):
 
         # Add "Custom" option if enabled
         if self.allow_custom:
-            self.dropdown.addItem("🔧 Custom", self._CUSTOM_SENTINEL)
+            self.dropdown.addItem("🔧 Outro modelo (digitar manualmente)...", self._CUSTOM_SENTINEL)
 
         # Set initial selection based on internal_value
         index = self.dropdown.findData(self.internal_value)
         if index != -1:
-            # Value matches a preset option
             self.dropdown.setCurrentIndex(index)
         elif self.allow_custom and self.internal_value:
-            # Value doesn't match any preset - it's a custom value, select "Custom"
             custom_index = self.dropdown.findData(self._CUSTOM_SENTINEL)
             if custom_index != -1:
                 self.dropdown.setCurrentIndex(custom_index)
@@ -196,40 +221,40 @@ class DropdownSetting(AIProviderSetting):
         if self.allow_custom:
             self.custom_input_container = QtWidgets.QWidget()
             custom_row_layout = QtWidgets.QHBoxLayout(self.custom_input_container)
-            custom_row_layout.setContentsMargins(0, 5, 0, 0)
+            custom_row_layout.setContentsMargins(0, 4, 0, 0)
 
             self.custom_input = QtWidgets.QLineEdit()
             self.custom_input.setPlaceholderText(self.custom_placeholder)
             self.custom_input.setStyleSheet(f"""
-                font-size: 16px;
-                padding: 5px;
-                background-color: {'#444' if colorMode=='dark' else 'white'};
-                color: {'#ffffff' if colorMode=='dark' else '#000000'};
-                border: 1px solid {'#666' if colorMode=='dark' else '#ccc'};
+                QLineEdit {{
+                    font-size: 13px;
+                    padding: 7px 10px;
+                    background-color: {combo_bg};
+                    color: {combo_fg};
+                    border: 1px solid {combo_border};
+                    border-radius: 9px;
+                }}
+                QLineEdit:focus {{
+                    border: 1px solid #0a84ff;
+                }}
             """)
 
-            # If current value is custom (not in presets), populate the input
             if self.dropdown.currentData() == self._CUSTOM_SENTINEL and self.internal_value:
                 self.custom_input.setText(self.internal_value)
 
             custom_row_layout.addWidget(self.custom_input)
             layout.addWidget(self.custom_input_container)
 
-            # Connect signal to show/hide custom input when dropdown changes
             self.dropdown.currentIndexChanged.connect(self._on_dropdown_changed)
-            # Set initial visibility
             self._update_custom_input_visibility()
 
     def _on_dropdown_changed(self):
-        """Handle dropdown selection change to show/hide custom input."""
         self._update_custom_input_visibility()
 
     def _update_custom_input_visibility(self):
-        """Show or hide the custom input based on dropdown selection."""
         if self.custom_input_container:
             is_custom = self.dropdown.currentData() == self._CUSTOM_SENTINEL
             self.custom_input_container.setVisible(is_custom)
-            # Focus the input when switching to Custom for better UX
             if is_custom and self.custom_input:
                 self.custom_input.setFocus()
 
@@ -237,7 +262,8 @@ class DropdownSetting(AIProviderSetting):
         self.internal_value = value
 
     def get_value(self):
-        # If "Custom" is selected, return the text input value (stripped of whitespace)
+        if not self.dropdown:
+            return self.internal_value
         if self.allow_custom and self.dropdown.currentData() == self._CUSTOM_SENTINEL:
             return self.custom_input.text().strip()
         return self.dropdown.currentData()
@@ -246,12 +272,6 @@ class DropdownSetting(AIProviderSetting):
 class AIProvider(ABC):
     """
     Abstract base class for AI providers.
-    
-    All providers must implement:
-      • get_response(system_instruction, prompt) -> str
-      • after_load() to create their client or model instance
-      • before_load() to cleanup any existing client
-      • cancel() to cancel an ongoing request
     """
     def __init__(self, app, provider_name: str, settings: List[AIProviderSetting],
                  description: str = "An unfinished AI provider!",
@@ -268,27 +288,19 @@ class AIProvider(ABC):
 
     @abstractmethod
     def get_response(self, system_instruction: str, prompt: str) -> str:
-        """
-        Send the given system instruction and prompt to the AI provider and return the full response text.
-        """
         pass
 
     def load_config(self, config: dict):
-        """
-        Load configuration settings into the provider.
-        """
         for setting in self.settings:
             if setting.name in config:
                 setattr(self, setting.name, config[setting.name])
                 setting.set_value(config[setting.name])
             else:
                 setattr(self, setting.name, setting.default_value)
+                setting.set_value(setting.default_value)
         self.after_load()
 
     def save_config(self):
-        """
-        Save provider configuration settings into the main config file.
-        """
         config = {}
         for setting in self.settings:
             config[setting.name] = setting.get_value()
@@ -297,45 +309,21 @@ class AIProvider(ABC):
 
     @abstractmethod
     def after_load(self):
-        """
-        Called after configuration is loaded; create your API client here.
-        """
         pass
 
     @abstractmethod
     def before_load(self):
-        """
-        Called before reloading configuration; cleanup your API client here.
-        """
         pass
 
     @abstractmethod
     def cancel(self):
-        """
-        Cancel any ongoing API request.
-        """
         pass
 
 
 class GeminiProvider(AIProvider):
     """
-    Provider for Google's Gemini API (using the new unified `google-genai` SDK).
-
-    Uses `client.models.generate_content()` for single-shot generation. The same
-    method is used for follow-up chat too — the entire conversation history is
-    passed via `contents` as a list of `Content` objects, so we don't need the
-    SDK's chat session abstraction.
-
-    System instruction is passed via `GenerateContentConfig.system_instruction`
-    (not concatenated into `contents`, as the legacy SDK required).
-
-    Thinking is disabled (set to "minimal", the lowest level the API exposes)
-    on Gemini 3-family models. Gemma models don't have a thinking process, so
-    `thinking_config` is omitted for them — passing it could otherwise error.
+    Provider for Google's Gemini API (using the unified `google-genai` SDK).
     """
-
-    # Disable safety filtering across all categories (best-effort; some models
-    # may still soft-refuse). Defined once, reused per request.
     _SAFETY_SETTINGS = [
         genai_types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="BLOCK_NONE"),
         genai_types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="BLOCK_NONE"),
@@ -348,56 +336,29 @@ class GeminiProvider(AIProvider):
         self.client = None
 
         settings = [
-            TextSetting(name="api_key", display_name="API Key", description="Paste your Gemini API key here"),
+            TextSetting(name="api_key", display_name="Chave de API (Gemini API Key)", description="Cole sua chave de API do Google AI Studio aqui"),
             DropdownSetting(
                 name="model_name",
-                display_name="Model",
+                display_name="Modelo do Gemini",
                 default_value="gemini-flash-latest",
-                description="Select Gemini model to use",
+                description="Selecione o modelo Gemini",
                 options=[
-                    # `gemini-flash-latest` is a Google-managed alias that currently
-                    # points to Gemini 3 Flash Preview — fast (~1–2s) and high
-                    # quality. Capped at 20 free requests/day per the model's free
-                    # tier.
-                    ("⭐ Gemini Flash Latest (very fast | only 20 free uses/day)", "gemini-flash-latest"),
-                    # Gemma 4 models are unlimited on the free tier but noticeably
-                    # slower (8–15s typical) since they run on different
-                    # infrastructure.
-                    ("Gemma 4 31B (slow | unlimited free use)", "gemma-4-31b-it"),
-                    ("Gemma 4 26B A4B (slow | unlimited free use)", "gemma-4-26b-a4b-it"),
+                    ("⭐ Gemini Flash Latest (muito rápido | 20 usos grátis/dia)", "gemini-flash-latest"),
+                    ("Gemma 4 31B (uso gratuito ilimitado)", "gemma-4-31b-it"),
+                    ("Gemma 4 26B A4B (uso gratuito ilimitado)", "gemma-4-26b-a4b-it"),
                 ],
                 allow_custom=True,
-                custom_placeholder="e.g., gemini-3.1-pro-preview"
+                custom_placeholder="Ex: gemini-2.5-flash"
             )
         ]
         super().__init__(app, "Gemini (Recommended)", settings,
-            "• Google's Gemini is a powerful AI model available for free!\n"
-            "• An API key is required to connect to Gemini on your behalf.\n"
-            "• Click the button below to get your API key.",
+            "• API do Google Gemini na nuvem (requer chave de API gratuita do Google AI Studio).\n"
+            "• Caso prefira usar IA 100% local e sem chave de API, escolha 'Ollama (Local / Grátis)' acima!",
             "gemini",
-            "Get API Key",
+            "Obter API Key Gratuita (Google AI Studio)",
             lambda: webbrowser.open("https://aistudio.google.com/app/apikey"))
 
     def _build_config(self, system_instruction: str) -> "genai_types.GenerateContentConfig":
-        """
-        Build a per-call GenerateContentConfig.
-
-        We don't override temperature: Gemini 3 docs explicitly recommend leaving
-        it at the default of 1.0 (lower values can cause looping / degraded
-        output on reasoning-heavy tasks). The old SDK code set it to 0.5; we drop
-        that override here.
-        """
-        # Thinking is disabled across the board for Writing Tools (latency matters
-        # more than reasoning depth for proofread/rewrite/summary flows).
-        #
-        # • Gemma 4 *is* capable of thinking, but is off by default. Per
-        #   https://ai.google.dev/gemma/docs/core/gemma_on_gemini_api#thinking,
-        #   thinking on Gemma 4 is binary and "you enable it in the API by setting
-        #   the thinking level to 'high'". So omitting thinking_config keeps
-        #   Gemma 4 in its default-off state.
-        # • Gemini 3 Flash / Flash-Lite cannot fully disable thinking. The
-        #   lowest exposed level is "minimal", which the docs say "matches the
-        #   'no thinking' setting for most queries".
         is_gemma = "gemma" in (self.model_name or "").lower()
         kwargs = {
             "system_instruction": system_instruction,
@@ -410,13 +371,6 @@ class GeminiProvider(AIProvider):
 
     @staticmethod
     def _messages_to_contents(messages: list) -> list:
-        """
-        Convert OpenAI-style chat history into google-genai `Content` objects.
-
-        Maps roles: assistant → "model", everything else → "user". Any "system"
-        entries are dropped because Gemini takes the system instruction via the
-        config object instead of as an in-history message.
-        """
         contents = []
         for m in messages:
             role = m.get("role")
@@ -428,17 +382,18 @@ class GeminiProvider(AIProvider):
         return contents
 
     def get_response(self, system_instruction: str, prompt, return_response: bool = False) -> str:
-        """
-        Generate content using Gemini.
-
-        `prompt` may be either a plain string (the typical inline-tool flow) or a
-        list of OpenAI-style message dicts (the follow-up chat flow). In both
-        cases we make a single-shot non-streaming request.
-
-        Returns the response text when `return_response` is True; otherwise emits
-        it via `output_ready_signal` for inline replacement.
-        """
         self.close_requested = False
+
+        if not self.client:
+            logging.warning("Gemini API key is not configured yet.")
+            if not return_response:
+                self.app.show_message_signal.emit(
+                    "Chave de API Necessária (ou use IA Local)",
+                    "Você selecionou o provedor Gemini, mas ainda não configurou uma API Key.\n\n"
+                    "💡 Dica: Clique no ícone de engrenagem (⚙️) no canto superior direito da janela flutuante "
+                    "para mudar para 'Ollama (For Experts)' (IA Local Gratuita) ou colar sua chave do Gemini!"
+                )
+            return ""
 
         try:
             contents = self._messages_to_contents(prompt) if isinstance(prompt, list) else prompt
@@ -451,36 +406,29 @@ class GeminiProvider(AIProvider):
 
             response_text = (response.text or "").rstrip('\n')
 
-            if not return_response and not hasattr(self.app, 'current_response_window'):
+            if not return_response and not getattr(self.app, 'current_response_window', None):
                 self.app.output_ready_signal.emit(response_text)
                 self.app.replace_text(True)
                 return ""
             return response_text
         except Exception as e:
             logging.error(f"Error processing Gemini response: {e}")
-            self.app.output_ready_signal.emit("An error occurred while processing the response.")
+            if not return_response:
+                self.app.show_message_signal.emit("Erro no Gemini", f"Ocorreu um erro ao consultar o Gemini: {e}")
             return ""
         finally:
             self.close_requested = False
 
     def load_config(self, config: dict):
-        """
-        Load configuration, deobfuscating the API key if needed.
-        """
-        # Deobfuscate API key before loading
         if 'api_key' in config:
-            config = config.copy()  # Don't modify the original
+            config = config.copy()
             config['api_key'] = deobfuscate_api_key(config['api_key'])
         super().load_config(config)
 
     def save_config(self):
-        """
-        Save configuration, obfuscating the API key for storage.
-        """
         config = {}
         for setting in self.settings:
             value = setting.get_value()
-            # Obfuscate API key before saving
             if setting.name == 'api_key':
                 value = obfuscate_api_key(value)
             config[setting.name] = value
@@ -488,12 +436,10 @@ class GeminiProvider(AIProvider):
         self.app.save_config(self.app.config)
 
     def after_load(self):
-        """
-        Construct the new `google-genai` Client. The model and per-call options
-        are passed at request time via `client.models.generate_content`, so we
-        don't pre-instantiate a model here.
-        """
-        self.client = genai.Client(api_key=self.api_key)
+        if self.api_key and self.api_key.strip():
+            self.client = genai.Client(api_key=self.api_key.strip())
+        else:
+            self.client = None
 
     def before_load(self):
         self.client = None
@@ -504,36 +450,62 @@ class GeminiProvider(AIProvider):
 
 class OpenAICompatibleProvider(AIProvider):
     """
-    Provider for OpenAI-compatible APIs.
-    
-    Uses self.client.chat.completions.create() to obtain a response.
-    Streaming is fully removed.
+    Provider for OpenAI-compatible APIs (Groq, OpenAI, OpenRouter, LM Studio, vLLM, etc.).
+    Includes built-in optimization and automatic multi-model rate-limit fallback for Groq Cloud.
     """
+    _GROQ_FALLBACK_CHAIN = [
+        "openai/gpt-oss-120b",
+        "qwen/qwen3.8-27b",
+        "openai/gpt-oss-20b",
+    ]
+
     def __init__(self, app):
         self.close_requested = None
         self.client = None
 
         settings = [
-            TextSetting(name="api_key", display_name="API Key", description="API key for the OpenAI-compatible API."),
-            TextSetting("api_base", "API Base URL", "https://api.openai.com/v1", "E.g. https://api.openai.com/v1"),
-            TextSetting("api_organisation", "API Organisation", "", "Leave blank if not applicable."),
-            TextSetting("api_project", "API Project", "", "Leave blank if not applicable."),
-            TextSetting("api_model", "API Model", "gpt-4o-mini", "E.g. gpt-4o-mini"),
+            TextSetting(name="api_key", display_name="Chave de API (Groq / OpenAI API Key)", description="Ex: gsk_... (Groq) ou sk-... (OpenAI)"),
+            TextSetting("api_base", "URL Base da API (API Base URL)", "https://api.groq.com/openai/v1", "Groq: https://api.groq.com/openai/v1 | OpenAI: https://api.openai.com/v1"),
+            DropdownSetting(
+                name="api_model",
+                display_name="Modelo da API (Groq / OpenAI)",
+                default_value="openai/gpt-oss-120b",
+                description="Selecione o modelo da Groq ou OpenAI",
+                options=[
+                    ("⚡ Groq: GPT-OSS 120B (Máxima Precisão PT-BR | ~0.4s | 1.000/dia grátis)", "openai/gpt-oss-120b"),
+                    ("⚡ Groq: Qwen 3.8 27B (Ultra Rápido ~0.3s | 1.000/dia grátis)", "qwen/qwen3.8-27b"),
+                    ("⚡ Groq: GPT-OSS 20B (Leve e Instantâneo ~0.3s | 1.000/dia grátis)", "openai/gpt-oss-20b"),
+                    ("OpenAI: GPT-4o Mini", "gpt-4o-mini"),
+                ],
+                allow_custom=True,
+                custom_placeholder="Digite o ID do modelo (ex: openai/gpt-oss-120b)"
+            ),
+            TextSetting("api_organisation", "Organização (Opcional)", "", "Deixe em branco se não aplicável"),
+            TextSetting("api_project", "Projeto (Opcional)", "", "Deixe em branco se não aplicável"),
         ]
         super().__init__(app, "OpenAI Compatible (For Experts)", settings,
-            "• Connect to ANY OpenAI-compatible API (v1/chat/completions).\n"
-            "• You must abide by the service's Terms of Service.",
-            "openai", "Get OpenAI API Key", lambda: webbrowser.open("https://platform.openai.com/account/api-keys"))
+            "• Ultra-rápido com Groq Cloud (Gratuito até 3.000 correções/dia somando o fallback automático!) ou OpenAI / OpenRouter / LM Studio.",
+            "openai", "Obter API Key Gratuita na Groq", lambda: webbrowser.open("https://console.groq.com/keys"))
+
+    def _call_completion(self, model_id: str, messages: list) -> str:
+        is_groq = "groq.com" in (self.api_base or "").lower()
+        kwargs = {
+            "model": model_id,
+            "messages": messages,
+            "temperature": 0.15,
+            "max_tokens": 800,
+            "stream": False,
+        }
+        if is_groq:
+            if model_id.startswith("openai/gpt-oss"):
+                kwargs["reasoning_effort"] = "low"
+            elif model_id.startswith("qwen/"):
+                kwargs["reasoning_effort"] = "none"
+
+        response = self.client.chat.completions.create(**kwargs)
+        return (response.choices[0].message.content or "").strip()
 
     def get_response(self, system_instruction: str, prompt: str | list, return_response: bool = False) -> str:
-        """
-        Send a chat request to the OpenAI-compatible API.
-        
-        Always performs a non-streaming request.
-        If prompt is not a list, builds a simple two-message conversation.
-        Returns the response text if return_response is True,
-        otherwise emits it via output_ready_signal.
-        """
         self.close_requested = False
 
         if isinstance(prompt, list):
@@ -544,37 +516,46 @@ class OpenAICompatibleProvider(AIProvider):
                 {"role": "user", "content": prompt}
             ]
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.api_model,
-                messages=messages,
-                temperature=0.5,
-                stream=False
-            )
-            response_text = response.choices[0].message.content.strip()
+        is_groq = "groq.com" in (self.api_base or "").lower()
+        models_to_try = [self.api_model]
+        if is_groq:
+            for fb in self._GROQ_FALLBACK_CHAIN:
+                if fb not in models_to_try:
+                    models_to_try.append(fb)
 
-            if not return_response and not hasattr(self.app, 'current_response_window'):
-                self.app.output_ready_signal.emit(response_text)
-            return response_text
+        last_err = None
+        for model_id in models_to_try:
+            try:
+                response_text = self._call_completion(model_id, messages)
+                if not return_response and not getattr(self.app, 'current_response_window', None):
+                    self.app.output_ready_signal.emit(response_text)
+                return response_text
+            except Exception as e:
+                last_err = e
+                err_lower = str(e).lower()
+                if is_groq and ("rate_limit" in err_lower or "429" in err_lower or "too large" in err_lower or "decommissioned" in err_lower):
+                    logging.warning(f"Groq model '{model_id}' hit limit or issue ({e}); falling back to next Groq model...")
+                    continue
+                break
 
-        except Exception as e:
-            error_str = str(e)
-            logging.error(f"Error while generating content: {error_str}")
-            if "exceeded" in error_str or "rate limit" in error_str:
+        error_str = str(last_err)
+        logging.error(f"Error while generating content: {error_str}")
+        if not return_response:
+            if "exceeded" in error_str.lower() or "rate limit" in error_str.lower() or "429" in error_str.lower():
                 self.app.show_message_signal.emit(
-                    "Rate Limit Hit",
-                    "It appears you have hit an API rate/usage limit. Please try again later or adjust your settings."
+                    "Limite de Requisições Atingido",
+                    "Você atingiu o limite temporário de uso da API. Tente novamente em alguns segundos."
                 )
             else:
-                self.app.show_message_signal.emit("Error", f"An error occurred: {error_str}")
-            return ""
+                self.app.show_message_signal.emit("Erro na API", f"Ocorreu um erro: {error_str}")
+        return ""
 
     def after_load(self):
         self.client = OpenAI(
-            api_key=self.api_key,
-            base_url=self.api_base,
-            organization=self.api_organisation,
-            project=self.api_project
+            api_key=self.api_key.strip() if self.api_key else "local-no-key",
+            base_url=(self.api_base or "https://api.groq.com/openai/v1").strip(),
+            organization=self.api_organisation.strip() if self.api_organisation else None,
+            project=self.api_project.strip() if self.api_project else None
         )
 
     def before_load(self):
@@ -586,34 +567,177 @@ class OpenAICompatibleProvider(AIProvider):
 
 class OllamaProvider(AIProvider):
     """
-    Provider for connecting to an Ollama server.
-    
-    Uses the /chat endpoint of the Ollama server to generate a response.
-    Streaming is not used.
+    Provider for connecting to a local Ollama server (100% Free & Offline Local AI).
+    Auto-detects locally installed Ollama models and automatically starts `ollama serve`
+    in the background if Ollama is installed on the machine but not currently running.
     """
     def __init__(self, app):
         self.close_requested = None
         self.client = None
         self.app = app
+
+        detected_models = self.detect_local_models()
+        default_model = detected_models[0][1] if detected_models else "llama3.2:latest"
+
+        self.model_dropdown_setting = DropdownSetting(
+            name="api_model",
+            display_name="Modelo Local do Ollama",
+            default_value=default_model,
+            description="Selecione um modelo instalado no seu Ollama ou digite outro",
+            options=detected_models,
+            allow_custom=True,
+            custom_placeholder="Ex: llama3.2:latest, qwen2.5:7b, gemma3:4b"
+        )
+
         settings = [
-            TextSetting("api_base", "API Base URL", "http://localhost:11434", "E.g. http://localhost:11434"),
-            TextSetting("api_model", "API Model", "llama3.1:8b", "E.g. llama3.1:8b"),
-            TextSetting("keep_alive", "Time to keep the model loaded in memory in minutes", "5", "E.g. 5")
+            self.model_dropdown_setting,
+            TextSetting("api_base", "URL do Servidor Ollama", "http://localhost:11434", "Ex: http://localhost:11434"),
+            TextSetting("keep_alive", "Manter modelo na memória (minutos)", "10", "Ex: 10 (ou -1 para sempre carregado)")
         ]
         super().__init__(app, "Ollama (For Experts)", settings,
-            "• Connect to an Ollama server (local LLM).",
-            "ollama", "Ollama Set-up Instructions",
-            lambda: webbrowser.open("https://github.com/theJayTea/WritingTools?tab=readme-ov-file#-optional-ollama-local-llm-instructions-for-windows-v7-onwards"))
+            "• Inteligência Artificial 100% Local, Gratuita e Privada rodando no seu PC via Ollama!\n"
+            "• Não precisa de chave de API nem pagar nada. Seus modelos instalados no Ollama aparecem automaticamente abaixo.",
+            "ollama", "Baixar / Ver Modelos do Ollama",
+            lambda: webbrowser.open("https://ollama.com/library"))
+
+    @staticmethod
+    def _find_ollama_executable() -> str | None:
+        """Find the `ollama` binary in PATH or standard Windows installation paths."""
+        exe = shutil.which("ollama")
+        if exe:
+            return exe
+        if sys.platform == "win32":
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            candidate = os.path.join(local_app_data, "Programs", "Ollama", "ollama.exe")
+            if os.path.exists(candidate):
+                return candidate
+            user_profile = os.environ.get("USERPROFILE", "")
+            candidate2 = os.path.join(user_profile, "AppData", "Local", "Programs", "Ollama", "ollama.exe")
+            if os.path.exists(candidate2):
+                return candidate2
+        return None
+
+    @classmethod
+    def ensure_ollama_running(cls, api_base: str = "http://localhost:11434") -> bool:
+        """
+        Check if the Ollama HTTP server is reachable; if not, attempt to launch
+        `ollama serve` in the background automatically.
+        """
+        tags_url = f"{api_base.rstrip('/')}/api/tags"
+        try:
+            with urllib.request.urlopen(tags_url, timeout=1.2) as resp:
+                if resp.status == 200:
+                    return True
+        except Exception:
+            pass
+
+        ollama_exe = cls._find_ollama_executable()
+        if not ollama_exe:
+            return False
+
+        try:
+            logging.info(f"Starting local Ollama server in background: {ollama_exe} serve")
+            creationflags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+            subprocess.Popen(
+                [ollama_exe, "serve"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags
+            )
+            # Wait up to 3.5s for server to come online
+            for _ in range(7):
+                time.sleep(0.5)
+                try:
+                    with urllib.request.urlopen(tags_url, timeout=1.0) as resp:
+                        if resp.status == 200:
+                            logging.info("Local Ollama server is online.")
+                            return True
+                except Exception:
+                    continue
+        except Exception as e:
+            logging.warning(f"Could not auto-start ollama serve: {e}")
+
+        return False
+
+    @classmethod
+    def detect_local_models(cls, api_base: str = "http://localhost:11434") -> list:
+        """
+        Return a list of `(display_label, model_name)` for locally installed Ollama models,
+        plus popular fallback recommendations.
+        """
+        found_names = []
+
+        # 1. Try HTTP API (/api/tags)
+        try:
+            tags_url = f"{api_base.rstrip('/')}/api/tags"
+            with urllib.request.urlopen(tags_url, timeout=1.2) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                for m in data.get("models", []):
+                    name = m.get("name")
+                    if name and name not in found_names:
+                        found_names.append(name)
+        except Exception:
+            pass
+
+        # 2. Try `ollama list` CLI if HTTP returned nothing
+        if not found_names:
+            ollama_exe = cls._find_ollama_executable()
+            if ollama_exe:
+                try:
+                    creationflags = 0x08000000 if sys.platform == "win32" else 0
+                    proc = subprocess.run(
+                        [ollama_exe, "list"],
+                        capture_output=True,
+                        text=True,
+                        timeout=4,
+                        creationflags=creationflags
+                    )
+                    if proc.returncode == 0 and proc.stdout:
+                        lines = [ln.strip() for ln in proc.stdout.splitlines() if ln.strip()]
+                        for ln in lines[1:]:  # Skip header row (NAME ID SIZE MODIFIED)
+                            parts = ln.split()
+                            if parts:
+                                model_id = parts[0].strip()
+                                if model_id and model_id not in found_names:
+                                    found_names.append(model_id)
+                except Exception as e:
+                    logging.debug(f"ollama list check failed: {e}")
+
+        options = []
+        for name in found_names:
+            options.append((f"🟢 {name} (Instalado no seu PC)", name))
+
+        # Add common lightweight suggestions if not already installed
+        presets = [
+            ("gemma3:4b", "Google Gemma 3 (4B - Rápido e Inteligente)"),
+            ("qwen2.5:7b", "Qwen 2.5 (7B - Alta Precisão em Texto)"),
+            ("gemma3:1b", "Google Gemma 3 (1B - Ultra Leve ~800MB)"),
+            ("llama3.2:latest", "Llama 3.2 (3B - Rápido e Leve)"),
+            ("qwen2.5-coder:7b", "Qwen 2.5 Coder 7B"),
+            ("llama3.1:8b", "Llama 3.1 (8B)"),
+        ]
+        for model_key, desc in presets:
+            if model_key not in found_names:
+                options.append((f"⬇️ {desc} ({model_key})", model_key))
+
+        return options
+
+    def refresh_detected_models(self):
+        """Refresh the dropdown options with currently installed local Ollama models."""
+        self.model_dropdown_setting.options = self.detect_local_models(
+            getattr(self, "api_base", "http://localhost:11434") or "http://localhost:11434"
+        )
 
     def get_response(self, system_instruction: str, prompt: str | list, return_response: bool = False) -> str:
         """
-        Send a chat request to the Ollama server.
-        
-        Always performs a non-streaming request.
-        Returns the response text if return_response is True,
-        otherwise emits it via output_ready_signal.
+        Send a chat request to the local Ollama server.
+        Automatically starts `ollama serve` if needed.
         """
         self.close_requested = False
+
+        base_url = getattr(self, "api_base", "http://localhost:11434") or "http://localhost:11434"
+        self.ensure_ollama_running(base_url)
 
         if isinstance(prompt, list):
             messages = prompt
@@ -624,18 +748,36 @@ class OllamaProvider(AIProvider):
             ]
 
         try:
-            response = self.client.chat(model=self.api_model, messages=messages)
-            response_text = response['message']['content'].strip()
-            if not return_response and not hasattr(self.app, 'current_response_window'):
+            if not self.client:
+                self.client = OllamaClient(host=base_url)
+
+            response = self.client.chat(
+                model=self.api_model,
+                messages=messages,
+                options={"temperature": 0.25}
+            )
+            if isinstance(response, dict):
+                response_text = response.get('message', {}).get('content', '').strip()
+            else:
+                response_text = getattr(getattr(response, 'message', None), 'content', '').strip()
+
+            if not return_response and not getattr(self.app, 'current_response_window', None):
                 self.app.output_ready_signal.emit(response_text)
             return response_text
         except Exception as e:
             logging.error(f"Error during Ollama chat: {e}")
-            self.app.output_ready_signal.emit("An error occurred during Ollama chat.")
+            if not return_response:
+                self.app.show_message_signal.emit(
+                    "Erro no Ollama Local",
+                    f"Não foi possível conectar ao modelo '{self.api_model}' no Ollama ({base_url}).\n\n"
+                    f"Verifique se o Ollama está aberto e se o modelo está instalado (`ollama pull {self.api_model}`).\n\n"
+                    f"Detalhes: {e}"
+                )
             return ""
 
     def after_load(self):
-        self.client = OllamaClient(host=self.api_base)
+        base_url = getattr(self, "api_base", "http://localhost:11434") or "http://localhost:11434"
+        self.client = OllamaClient(host=base_url)
 
     def before_load(self):
         self.client = None

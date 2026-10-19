@@ -1,0 +1,29 @@
+{
+    "shortcut": "ctrl+space",
+    "theme": "gradient",
+    "streaming": false,
+    "provider": "OpenAI Compatible (For Experts)",
+    "whisper_model": "large-v3",
+    "whisper_device": "auto",
+    "audio_llm_refinement": true,
+    "providers": {
+        "Gemini (Recommended)": {
+            "api_key": "",
+            "model_name": "gemini-flash-latest"
+        },
+        "OpenAI Compatible (For Experts)": {
+            "api_key": "",
+            "api_base": "https://api.groq.com/openai/v1",
+            "api_organisation": "",
+            "api_project": "",
+            "api_model": "openai/gpt-oss-120b"
+        },
+        "Ollama (For Experts)": {
+            "api_base": "http://localhost:11434",
+            "api_model": "qwen2.5:7b",
+            "keep_alive": "15"
+        }
+    },
+    "is_config_file_updated_for_v8": true,
+    "is_config_file_updated_for_v9": true
+}
