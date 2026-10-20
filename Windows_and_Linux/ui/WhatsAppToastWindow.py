@@ -180,3 +180,4 @@ class WhatsAppToastWindow(QtWidgets.QWidget):
             if self._current_text:
                 self.app.output_queue = ""
                 self.app.output_ready_signal.emit(self._current_text)
+

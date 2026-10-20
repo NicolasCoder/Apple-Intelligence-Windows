@@ -43,11 +43,14 @@ class AutostartManager:
         python_exe = os.path.abspath(sys.executable)
         pythonw_candidate = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
         runner_exe = pythonw_candidate if os.path.exists(pythonw_candidate) else python_exe
+        # Use 1 (SW_SHOWNORMAL) when launching pythonw.exe (which already has no console window)
+        # so Windows does NOT set STARTUPINFO.wShowWindow = SW_HIDE (0) on our GUI windows!
+        win_style = 1 if runner_exe.lower().endswith("pythonw.exe") else 0
 
         vbs_content = (
             'Set WshShell = CreateObject("WScript.Shell")\r\n'
             f'WshShell.CurrentDirectory = "{app_dir}"\r\n'
-            f'WshShell.Run """{runner_exe}"" ""{main_py}""", 0, False\r\n'
+            f'WshShell.Run """{runner_exe}"" ""{main_py}""", {win_style}, False\r\n'
         )
         try:
             with open(vbs_path, "w", encoding="utf-8") as f:

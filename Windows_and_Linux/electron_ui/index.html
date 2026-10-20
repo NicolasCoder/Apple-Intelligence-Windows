@@ -267,16 +267,49 @@
   }
 
   .status-line {
-    font-size: 13px;
+    font-size: 12.5px;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--text-primary);
     text-align: center;
-    margin-bottom: 6px;
+    margin-bottom: 4px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     max-width: 95%;
+  }
+
+  /* Live Real-Time Streaming Caption (Nemotron 3.5 / Whisper) */
+  .live-transcript {
+    display: none;
+    width: 94%;
+    max-height: 36px;
+    padding: 3px 9px;
+    margin-bottom: 5px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.055);
+    border: 1px solid rgba(168, 130, 255, 0.22);
+    color: rgba(245, 245, 247, 0.92);
+    font-size: 11.2px;
+    font-weight: 500;
+    line-height: 1.28;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: none;
+    animation: viewFade 0.16s ease-out;
+  }
+
+  body.light .live-transcript {
+    background: rgba(0, 0, 0, 0.045);
+    border-color: rgba(10, 132, 255, 0.22);
+    color: rgba(29, 29, 31, 0.92);
+  }
+
+  .live-transcript.active {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
   /* Ultra-Minimalist Action Pill (Replaces the bulky button) */
@@ -653,6 +686,7 @@
         </div>
 
         <div class="status-line" id="audioStatus">Ouvindo...</div>
+        <div class="live-transcript" id="liveTranscript"></div>
 
         <button class="minimal-pill" id="recordPillBtn" onclick="sendIPC({action:'toggle_record'})">
           <span class="rec-dot" id="recDot"></span>
@@ -994,6 +1028,22 @@ window.setOrbState = function(recording, processing) {
 window.setAudioStatus = function(mainText, timerStr) {
   if (mainText != null) document.getElementById('audioStatus').textContent = mainText;
   if (timerStr != null) document.getElementById('timerTag').textContent = timerStr;
+};
+
+window.setPartialTranscript = function(text) {
+  const el = document.getElementById('liveTranscript');
+  if (!el) return;
+  const clean = (text || '').trim();
+  if (!clean) {
+    el.textContent = '';
+    el.classList.remove('active');
+  } else {
+    // Keep the most recent words visible if the user speaks a long paragraph
+    const words = clean.split(/\s+/);
+    const tail = words.length > 14 ? '… ' + words.slice(-14).join(' ') : clean;
+    el.textContent = tail;
+    el.classList.add('active');
+  }
 };
 
 window.setTheme = function(isLight) {

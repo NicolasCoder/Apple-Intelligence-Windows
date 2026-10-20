@@ -4,6 +4,7 @@
 # User configuration & local API keys (NEVER commit config.json!)
 Windows_and_Linux/config.json
 Windows_and_Linux/start_silent.vbs
+**/*.log
 
 # Node & build artifacts
 **/node_modules/

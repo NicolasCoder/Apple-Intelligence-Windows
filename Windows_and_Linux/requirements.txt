@@ -8,7 +8,7 @@ markdown2
 pyinstaller
 ollama
 faster-whisper
+transformers>=5.13.0
+accelerate
 sounddevice
 numpy
-
-

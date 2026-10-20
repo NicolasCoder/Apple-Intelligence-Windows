@@ -321,3 +321,4 @@ class WhatsAppOggWatcher(QtCore.QObject):
         finally:
             with self._lock:
                 self._in_progress.discard(norm)
+

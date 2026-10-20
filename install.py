@@ -63,8 +63,9 @@ def setup_config(gpu_detected: bool):
                 "theme": "gradient",
                 "streaming": False,
                 "provider": "Ollama (For Experts)",
-                "whisper_model": "large-v3" if gpu_detected else "base",
+                "whisper_model": "nemotron-3.5-streaming" if gpu_detected else "base",
                 "whisper_device": "auto" if gpu_detected else "cpu_int8",
+                "live_streaming_preview": True,
                 "audio_llm_refinement": True,
                 "providers": {
                     "Gemini (Recommended)": {"api_key": "", "model_name": "gemini-flash-latest"},

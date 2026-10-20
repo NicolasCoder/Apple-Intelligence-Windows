@@ -86,22 +86,25 @@ class WritingToolApp(QtWidgets.QApplication):
         self.current_text_holder = None
         self._capture_lock = threading.Lock()
 
-        # Initialize AudioTranscriber (sounddevice + faster-whisper CUDA/CPU configurable)
-        whisper_model = (self.config or {}).get('whisper_model', 'large-v3')
+        # Initialize AudioTranscriber (sounddevice + NVIDIA Nemotron 3.5 Streaming / Faster-Whisper)
+        whisper_model = (self.config or {}).get('whisper_model', 'nemotron-3.5-streaming')
         whisper_device = (self.config or {}).get('whisper_device', 'auto')
+        live_streaming = (self.config or {}).get('live_streaming_preview', True)
         saved_mic_device = (self.config or {}).get('microphone_device', None)
         self.audio_transcriber = AudioTranscriber(
             self,
             default_model_size=whisper_model,
             device_index=saved_mic_device,
-            whisper_device=whisper_device
+            whisper_device=whisper_device,
+            live_streaming_enabled=live_streaming
         )
         self.audio_transcriber.status_changed.connect(self._on_audio_status_changed)
         self.audio_transcriber.audio_level_signal.connect(self._on_audio_level)
         self.audio_transcriber.audio_spectrum_signal.connect(self._on_audio_spectrum)
+        self.audio_transcriber.partial_transcript_signal.connect(self._on_partial_transcript)
         self.audio_transcriber.transcription_finished.connect(self._on_transcription_finished)
         self.audio_transcriber.transcription_error.connect(self._on_transcription_error)
-        # Preload Whisper on CUDA in background so first transcription is fast
+        # Preload ASR model on CUDA in background so first transcription is fast
         self.audio_transcriber.preload_model_async()
 
         self._ = gettext.gettext
@@ -902,6 +905,12 @@ class WritingToolApp(QtWidgets.QApplication):
         if self.popup_window is not None and self.popup_window.isVisible():
             if hasattr(self.popup_window, "update_audio_spectrum"):
                 self.popup_window.update_audio_spectrum(spec)
+
+    @Slot(str)
+    def _on_partial_transcript(self, partial_text: str):
+        if self.popup_window is not None and self.popup_window.isVisible():
+            if hasattr(self.popup_window, "update_partial_transcript"):
+                self.popup_window.update_partial_transcript(partial_text)
 
     @Slot(str)
     def _on_transcription_error(self, error_msg: str):
@@ -1874,16 +1883,26 @@ class WritingToolApp(QtWidgets.QApplication):
 
     def show_settings(self, providers_only=False):
         """
-        Show the settings window.
+        Show the settings window and force it to the foreground on Windows.
         """
-        logging.debug('Showing settings window')
-        if self.settings_window is not None and self.settings_window.isVisible():
-            self.settings_window.close()
-        self.settings_window = ui.SettingsWindow.SettingsWindow(self, providers_only=providers_only)
-        self.settings_window.retranslate_ui()
-        self.settings_window.show()
-        self.settings_window.raise_()
-        self.settings_window.activateWindow()
+        logging.info('Showing settings window')
+        try:
+            if self.settings_window is not None and self.settings_window.isVisible():
+                self.settings_window.close()
+            self.settings_window = ui.SettingsWindow.SettingsWindow(self, providers_only=bool(providers_only))
+            self.settings_window.retranslate_ui()
+            self.settings_window.showNormal()
+            self.settings_window.show()
+            self.settings_window.raise_()
+            self.settings_window.activateWindow()
+            if sys.platform == "win32":
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd = int(self.settings_window.winId())
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW
+                user32.SetForegroundWindow(hwnd)
+        except Exception as e:
+            logging.error(f"Error opening SettingsWindow: {e}", exc_info=True)
 
 
     def show_about(self):

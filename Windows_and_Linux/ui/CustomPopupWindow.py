@@ -272,7 +272,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
        - Frosted glass instruction bar + "Corrigir PT-BR ↵" + minimalist grid.
        - Transitions smoothly to the working Orb state while AI processes.
     """
-    AUDIO_SIZE = (296, 224)
+    AUDIO_SIZE = (306, 250)
     WORKING_SIZE = (296, 214)
     TEXT_WIDTH = 326
 
@@ -458,6 +458,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
     def force_foreground_focus(self):
         """Ensure the popup receives keyboard focus on Windows so pressing Space works hands-free."""
         try:
+            self.showNormal()
             self.raise_()
             self.activateWindow()
             if self.web_view is not None:
@@ -467,6 +468,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
                 user32 = ctypes.windll.user32
                 kernel32 = ctypes.windll.kernel32
                 hwnd = int(self.winId())
+                user32.ShowWindow(hwnd, 5)  # SW_SHOW (defeats any STARTUPINFO SW_HIDE)
                 fg_hwnd = user32.GetForegroundWindow()
                 if fg_hwnd and fg_hwnd != hwnd:
                     fg_tid = user32.GetWindowThreadProcessId(fg_hwnd, None)
@@ -558,6 +560,7 @@ class CustomPopupWindow(QtWidgets.QWidget):
         self._space_was_down = True
 
         transcriber.start_recording()
+        self._run_js("window.setPartialTranscript('');")
         self._run_js("window.setOrbState(true, false);")
         self._run_js("window.setAudioStatus('Ouvindo...', '0:00');")
         self.record_timer.start()
@@ -665,9 +668,15 @@ class CustomPopupWindow(QtWidgets.QWidget):
         if self.current_mode == "audio" and spec:
             self._run_js(f"window.updateOrbSpectrum({json.dumps(spec)});")
 
+    @QtCore.Slot(str)
+    def update_partial_transcript(self, partial_text: str):
+        if self.current_mode == "audio":
+            self._run_js(f"window.setPartialTranscript({json.dumps(partial_text or '', ensure_ascii=False)});")
+
     def _reset_audio_ui(self):
         self.is_busy_processing = False
         self.record_timer.stop()
+        self._run_js("window.setPartialTranscript('');")
         self._run_js("window.setOrbState(false, false);")
         self._run_js("window.setAudioStatus('Pronto para ouvir', '0:00');")
 

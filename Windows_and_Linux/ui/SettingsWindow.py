@@ -19,11 +19,12 @@ PROVIDER_DISPLAY_TO_INTERNAL = [
 ]
 
 WHISPER_MODEL_OPTIONS = [
-    ("⚡ tiny — Ultra leve (~75 MB) • Ideal para PC fraco / CPU", "tiny"),
-    ("🚀 base — Leve e rápido (~145 MB) • PC modesto / CPU", "base"),
-    ("⚖️ small — Equilibrado (~460 MB) • GPU básica ou CPU boa", "small"),
-    ("🎯 medium — Alta precisão (~1.5 GB) • GPU intermediária", "medium"),
-    ("🏆 large-v3 — Máxima precisão (~3 GB) • GPU NVIDIA RTX", "large-v3"),
+    ("🌟 NVIDIA Nemotron 3.5 Streaming 0.6B (Recomendado • Transcrição Ao Vivo PT-BR)", "nemotron-3.5-streaming"),
+    ("🏆 Faster-Whisper large-v3 — Máxima precisão (~3 GB) • GPU NVIDIA RTX", "large-v3"),
+    ("🎯 Faster-Whisper medium — Alta precisão (~1.5 GB) • GPU intermediária", "medium"),
+    ("⚖️ Faster-Whisper small — Equilibrado (~460 MB) • GPU básica ou CPU boa", "small"),
+    ("🚀 Faster-Whisper base — Leve e rápido (~145 MB) • PC modesto / CPU", "base"),
+    ("⚡ Faster-Whisper tiny — Ultra leve (~75 MB) • Ideal para PC fraco / CPU", "tiny"),
 ]
 
 WHISPER_DEVICE_OPTIONS = [
@@ -339,7 +340,7 @@ class SettingsWindow(QtWidgets.QWidget):
 
         content_layout.addWidget(ai_card)
 
-        # ─── CARD 2: TRANSCRIÇÃO DE ÁUDIO (FASTER-WHISPER) ───────────────────
+        # ─── CARD 2: TRANSCRIÇÃO DE ÁUDIO (NEMOTRON 3.5 STREAMING / FASTER-WHISPER) ───
         whisper_card = QtWidgets.QWidget()
         whisper_card.setObjectName("settingsCard")
         whisper_card.setStyleSheet(self._card_style())
@@ -347,28 +348,28 @@ class SettingsWindow(QtWidgets.QWidget):
         whisper_layout.setContentsMargins(16, 14, 16, 16)
         whisper_layout.setSpacing(10)
 
-        w_title = QtWidgets.QLabel("🎙️  Transcrição de Voz (Faster-Whisper Local)")
+        w_title = QtWidgets.QLabel("🎙️  Transcrição de Voz (NVIDIA Nemotron 3.5 Streaming & Faster-Whisper)")
         w_title.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {fg_primary};")
         whisper_layout.addWidget(w_title)
 
         w_desc = QtWidgets.QLabel(
-            "Se o computador não tiver uma placa de vídeo forte, escolha um modelo mais leve (como 'base' ou 'small') "
-            "ou mude o processador para CPU."
+            "O NVIDIA Nemotron 3.5 Streaming 0.6B transcreve em tempo real enquanto você fala (com pontuação nativa em PT-BR). "
+            "Você também pode alternar para qualquer versão do Faster-Whisper quando quiser."
         )
         w_desc.setWordWrap(True)
         w_desc.setStyleSheet(f"font-size: 12px; color: {fg_secondary};")
         whisper_layout.addWidget(w_desc)
 
-        # Whisper Model Size Dropdown
-        w_model_label = QtWidgets.QLabel("Tamanho do Modelo Faster-Whisper:")
+        # ASR Model Dropdown (Nemotron 3.5 Streaming primary + Faster-Whisper options)
+        w_model_label = QtWidgets.QLabel("Motor / Modelo de Transcrição de Voz:")
         w_model_label.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {fg_primary};")
         whisper_layout.addWidget(w_model_label)
 
         self.whisper_model_dropdown = QtWidgets.QComboBox()
         self.whisper_model_dropdown.setCursor(QtGui.QCursor(QtCore.Qt.CursorShape.PointingHandCursor))
         self.whisper_model_dropdown.setStyleSheet(self._combo_style())
-        saved_w_model = self.app.config.get('whisper_model', 'large-v3')
-        w_model_idx = 4  # default large-v3
+        saved_w_model = self.app.config.get('whisper_model', 'nemotron-3.5-streaming')
+        w_model_idx = 0  # default nemotron-3.5-streaming
         for idx, (label_txt, val) in enumerate(WHISPER_MODEL_OPTIONS):
             self.whisper_model_dropdown.addItem(label_txt, val)
             if val == saved_w_model:
@@ -392,6 +393,14 @@ class SettingsWindow(QtWidgets.QWidget):
                 w_dev_idx = idx
         self.whisper_device_dropdown.setCurrentIndex(w_dev_idx)
         whisper_layout.addWidget(self.whisper_device_dropdown)
+
+        # Checkbox: Show live streaming partial transcription while speaking
+        self.live_streaming_checkbox = QtWidgets.QCheckBox(
+            "⚡ Mostrar texto transcrevendo em tempo real na tela enquanto eu falo (Streaming Ao Vivo)"
+        )
+        self.live_streaming_checkbox.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {fg_primary}; margin-top: 4px;")
+        self.live_streaming_checkbox.setChecked(self.app.config.get('live_streaming_preview', True))
+        whisper_layout.addWidget(self.live_streaming_checkbox)
 
         # Checkbox: Refine transcribed audio with LLM
         self.audio_llm_checkbox = QtWidgets.QCheckBox(
@@ -539,14 +548,16 @@ class SettingsWindow(QtWidgets.QWidget):
         else:
             self.app.create_tray_icon()
 
-        # Save Whisper settings and apply immediately
-        whisper_model = self.whisper_model_dropdown.currentData() if self.whisper_model_dropdown else 'large-v3'
+        # Save Whisper / Nemotron settings and apply immediately
+        whisper_model = self.whisper_model_dropdown.currentData() if self.whisper_model_dropdown else 'nemotron-3.5-streaming'
         whisper_device = self.whisper_device_dropdown.currentData() if self.whisper_device_dropdown else 'auto'
+        live_streaming = self.live_streaming_checkbox.isChecked() if getattr(self, 'live_streaming_checkbox', None) else True
         audio_llm = self.audio_llm_checkbox.isChecked() if self.audio_llm_checkbox else True
         wa_ogg = self.whatsapp_ogg_checkbox.isChecked() if getattr(self, 'whatsapp_ogg_checkbox', None) else True
 
         self.app.config['whisper_model'] = whisper_model
         self.app.config['whisper_device'] = whisper_device
+        self.app.config['live_streaming_preview'] = live_streaming
         self.app.config['audio_llm_refinement'] = audio_llm
         self.app.config['whatsapp_ogg_watcher'] = wa_ogg
 
@@ -555,6 +566,7 @@ class SettingsWindow(QtWidgets.QWidget):
             self.app.update_tray_menu()
 
         if hasattr(self.app, 'audio_transcriber') and self.app.audio_transcriber:
+            self.app.audio_transcriber.live_streaming_enabled = live_streaming
             self.app.audio_transcriber.configure_whisper(
                 model_size=whisper_model,
                 whisper_device=whisper_device,

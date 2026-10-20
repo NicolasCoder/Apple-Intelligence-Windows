@@ -1,7 +1,8 @@
 # ✨ Apple Intelligence Writing Tools & Voice Dictation (Windows & Linux)
 
 Uma suíte minimalista no estilo **macOS Sequoia / Apple Intelligence** para **Windows e Linux**, combinando:
-- 🎙️ **Ditado por Voz Instantâneo (Zero-Click)** com **Faster-Whisper Local** (GPU NVIDIA CUDA `float16` ou CPU `int8`) + **Orbe 3D Reativa ao Tom da Voz (FFT Pitch-Reactive)**.
+- 🎙️ **Ditado por Voz Instantâneo (Zero-Click) com Streaming Ao Vivo**: Suporta **NVIDIA Nemotron 3.5 ASR Streaming 0.6B** (`nvidia/nemotron-3.5-asr-streaming-0.6b`, opção principal recomendada com legenda em tempo real enquanto você fala e pontuação nativa em PT-BR) e **Faster-Whisper Local** (`large-v3`, `medium`, `small`, `base`, `tiny` em GPU NVIDIA CUDA `float16` ou CPU `int8`) + **Orbe 3D Reativa ao Tom da Voz (FFT Pitch-Reactive)**.
+- 🟢 **Auto-Transcrição de Áudios do WhatsApp (`.ogg`) Multi-Navegador**: Monitora automaticamente as pastas de download de todos os seus navegadores (Chrome, Edge, Brave, Opera, Vivaldi, Firefox) e exibe um pop-up Apple Intelligence no canto da tela com explosão de partículas e texto revelado ao vivo sempre que você baixar um áudio `.ogg`.
 - ✍️ **Correção Inteligente de Digitação em PT-BR (`Corrigir PT-BR`)** ultra-rápida (~0,4s) via **Groq Cloud (Gratuito)**, **Ollama (100% Local)** ou **Google Gemini**.
 - 🪟 **Interface Glassmorphism Chromium/Electron** flutuante e leve, iniciando automaticamente junto com o Windows na bandeja do sistema.
 
@@ -27,8 +28,8 @@ Basta mandar para o seu agente de IA:
 ## ⌨️ Como Usar no Dia a Dia
 
 1. **🎙️ Modo Áudio (Sem nenhum texto selecionado)**:
-   - Aperte **`Ctrl + Space`** em qualquer lugar do Windows -> a cápsula Apple Intelligence abre **já gravando sua voz** com a Orbe 3D reagindo às notas graves e agudas da sua fala.
-   - Aperte **`Espaço`** (ou `Ctrl + Space` novamente) -> para a gravação, transcreve no **Faster-Whisper**, revisa pontuação/gramática na IA e **cola (`Ctrl + V`) automaticamente** onde seu cursor estava!
+   - Aperte **`Ctrl + Space`** em qualquer lugar do Windows -> a cápsula Apple Intelligence abre **já gravando sua voz** com a Orbe 3D reagindo às notas graves e agudas da sua fala e **mostrando o texto sendo transcrito em tempo real na tela enquanto você fala**.
+   - Aperte **`Espaço`** (ou `Ctrl + Space` novamente) -> para a gravação, conclui a transcrição no **NVIDIA Nemotron 3.5 Streaming** (ou **Faster-Whisper**, selecionável em `⚙️ Configurações`), revisa pontuação/gramática na IA e **cola (`Ctrl + V`) automaticamente** onde seu cursor estava!
 2. **✍️ Modo Texto (Com texto selecionado)**:
    - Selecione qualquer texto e aperte **`Ctrl + Space`** para abrir o menu Apple Intelligence, **OU** aperte **`Ctrl + Shift + Space`** para acionar o **`Corrigir PT-BR`** direto (sem nem abrir janela) e substituir o texto selecionado em **~0,4s**!
 

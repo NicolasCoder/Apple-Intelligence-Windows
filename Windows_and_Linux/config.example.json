@@ -3,8 +3,9 @@
     "theme": "gradient",
     "streaming": false,
     "provider": "OpenAI Compatible (For Experts)",
-    "whisper_model": "large-v3",
+    "whisper_model": "nemotron-3.5-streaming",
     "whisper_device": "auto",
+    "live_streaming_preview": true,
     "audio_llm_refinement": true,
     "whatsapp_ogg_watcher": true,
     "providers": {
